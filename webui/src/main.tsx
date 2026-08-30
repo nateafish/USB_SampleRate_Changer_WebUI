@@ -248,6 +248,9 @@ type Status = {
   auto_reapply?: string;
   audio_backend?: string;
   audio_config_source?: string;
+  aidl_core_version?: string;
+  aidl_core_versions?: string;
+  aidl_version_supported?: string;
   aidl_module_count?: string;
   aidl_usb_output_device_count?: string;
   aidl_usb_reachable_mix_port_count?: string;
@@ -1166,20 +1169,22 @@ function App() {
                 </section>
 
                 <Show when={isAidl()}><section class="card section-card aidl-card">
-                  <SectionHeading title={tx("AIDL v3 适配状态")} />
+                  <SectionHeading title={tx("AIDL Audio HAL 适配状态")} />
                   <div class="about-details">
+                    <div><span>{tx("接口版本")}</span><strong>{status().aidl_core_version ? `AIDL v${status().aidl_core_version}` : status().aidl_core_versions || "AIDL"}</strong></div>
                     <div><span>{tx("配置适配器")}</span><strong>{status().aidl_config_adapter || "read-only"}</strong></div>
                     <div><span>{tx("配置来源")}</span><strong>{status().aidl_config_path || status().audio_config_source || "—"}</strong></div>
                     <div><span>{tx("拓扑匹配")}</span><strong>{status().aidl_config_topology || "—"}</strong></div>
                     <div><span>{tx("USB 可达端口")}</span><strong>{status().aidl_usb_reachable_mix_port_count || "0"}</strong></div>
                   </div>
                   <p class="field-help">{tx("端口按 flags、动态 profile 和 USB 路由可达性分类，不依赖 hifi_playback 等厂商名字。")}</p>
-                  <p class="aidl-behaviors">{status().aidl_usb_port_behaviors || status().aidl_config_error || "—"}</p>
+                  <p class="aidl-behaviors">{status().aidl_usb_port_behaviors || "—"}</p>
+                  <Show when={status().aidl_config_error}><p class="field-help">{status().aidl_config_error}</p></Show>
                 </section></Show>
 
                 <section class="status-strip card">
                   <div><span class="label">audioserver</span><strong>{status().audioserver_pid || tx("未检测到")}</strong></div>
-                  <div><span class="label">Audio HAL</span><strong>{isAidl() ? "AIDL v3" : tx("传统 / HIDL")}</strong></div>
+                  <div><span class="label">Audio HAL</span><strong>{isAidl() ? (status().aidl_core_version ? `AIDL v${status().aidl_core_version}` : "AIDL") : tx("传统 / HIDL")}</strong></div>
                   <div><span class="label">{tx("当前采样率")}</span><strong>{status().sample_rate ? tx(displayRate(status().sample_rate ?? "")) : "—"}</strong></div>
                   <div><span class="label">Bluetooth A2DP</span><strong>{status().bluetooth_a2dp_connected === "1" ? tx("已连接") : tx("未连接")}</strong></div>
                 </section>

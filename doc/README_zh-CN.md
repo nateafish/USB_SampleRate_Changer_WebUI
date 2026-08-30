@@ -5,7 +5,7 @@ English reference：[README.md](../README.md)
 
 本项目为 [USB_SampleRate_Changer](https://github.com/yzyhk904/USB_SampleRate_Changer)的 WebUI 管理器。模块通过内置的 Rust 二进制后端用于执行 `USB_SampleRate_Changer` 的脚本。
 
-> 1.0.6 实验性加入 AIDL v3 Audio HAL 后端。原有传统 XML/HIDL 路径及上游子模块保持不变；只有厂商 module XML 与实时拓扑完整匹配时，才允许持久应用 AIDL 配置。
+> 1.0.6 实验性加入 Audio Core AIDL v2/v3 后端。原有传统 XML/HIDL 路径及上游子模块保持不变；只有厂商 module XML 与实时拓扑完整匹配时，才允许持久应用 AIDL 配置。
 
 ## 仓库结构
 
@@ -76,7 +76,7 @@ git submodule update --init --recursive
 ## 安全与兼容性提示
 
 - 本模块会修改音频策略、音频服务属性以及部分系统调优参数。请确认设备、ROM 和 HAL 支持所选模式。
-- 实验性 AIDL v3 解析按 flags、动态 profile 与 route 分类端口，不依赖厂商端口名；持久写回仍属于厂商家族适配器，详见 `AIDL_V3_BACKEND.md`。
+- 实验性 Audio Core AIDL v2/v3 解析按 flags、动态 profile 与 route 分类端口，不依赖厂商端口名；持久写回仍属于厂商家族适配器，详见 `AIDL_V3_BACKEND.md`。
 - 应用策略或重采样配置可能短暂中断音频；Bluetooth A2DP 已连接时尤其需要注意路由恢复提示。
 - SELinux、温控、Doze、调频和系统服务相关操作可能降低安全性、稳定性或续航，并可能导致设备过热。请只启用自己理解其影响的选项。
 - 高采样率是否真正可用还取决于 USB DAC、内核、USB Audio HAL 和厂商音频策略；选择器中的范围不代表每台设备都支持全部采样率。

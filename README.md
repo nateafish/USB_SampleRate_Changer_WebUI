@@ -4,7 +4,7 @@
 
 This project is a WebUI manager for [USB_SampleRate_Changer](https://github.com/yzyhk904/USB_SampleRate_Changer). The module uses a bundled Rust backend to execute the `USB_SampleRate_Changer` scripts.
 
-> Version 1.0.6 experimentally adds an AIDL v3 Audio HAL backend. The original traditional XML/HIDL path and upstream submodule remain intact. Persistent AIDL application is enabled only when a vendor module-XML source matches the complete live topology.
+> Version 1.0.6 experimentally adds an Audio Core AIDL v2/v3 backend. The original traditional XML/HIDL path and upstream submodule remain intact. Persistent AIDL application is enabled only when a vendor module-XML source matches the complete live topology.
 
 ## Repository layout
 
@@ -75,7 +75,7 @@ The build copies the current Submodule worktree into a temporary directory, veri
 ## Safety and compatibility
 
 - This module modifies audio policy, audio-service properties and selected system-tuning parameters. Confirm that the device, ROM and HAL support the chosen mode.
-- Experimental AIDL v3 discovery classifies runtime ports by flags, profiles and routes rather than vendor port names. Persistent AIDL writers remain vendor-family adapters and are enabled only after the backing configuration matches the live topology completely; see `doc/AIDL_V3_BACKEND.md`.
+- Experimental Audio Core AIDL v2/v3 discovery classifies runtime ports by flags, profiles and routes rather than vendor port names. Persistent AIDL writers remain vendor-family adapters and are enabled only after the backing configuration matches the live topology completely; see `doc/AIDL_V3_BACKEND.md`.
 - Applying a policy or resampler configuration may briefly interrupt audio. Pay particular attention to the route-recovery warning when Bluetooth A2DP is connected.
 - SELinux, thermal, Doze, governor and system-service operations may reduce security, stability or battery life and may cause overheating. Enable only options whose impact you understand.
 - Actual high-sample-rate support also depends on the USB DAC, kernel, USB Audio HAL and vendor audio policy; the selector range does not mean every device supports every rate.

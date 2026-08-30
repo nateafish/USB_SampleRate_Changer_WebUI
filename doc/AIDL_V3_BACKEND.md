@@ -1,7 +1,27 @@
-# AIDL v3 audio backend
+# Audio Core AIDL v2/v3 backend
 
 The AIDL implementation is additive. Traditional XML and HIDL devices continue
 to use the bundled `USB_SampleRate_Changer.sh` and its existing templates.
+
+The backend does not issue version-specific Binder calls. It consumes the
+framework's `media.audio_policy` topology and the vendor module XML from which
+the HAL creates that topology, so the same parser and writer can cover Audio
+Core AIDL v2 and v3 when all structural gates pass. VINTF is read separately to
+report the interface version; it is not used as a shortcut around topology
+validation.
+
+The frozen AOSP v2 and v3 `IModule.aidl` files are byte-identical, as are the
+two frozen `IConfig.aidl` files. Their common surface includes
+`getAudioPorts`, `getAudioRoutes`, `setAudioPortConfig` and `setAudioPatch`.
+Other package types may evolve between versions, but this backend does not
+marshal any of them directly; it operates after AudioPolicy has rendered the
+topology and before the vendor HAL parses its module XML.
+
+This is a fixed policy/rate changer, matching the scope of the upstream module.
+It does not implement Xiaomi's per-track source-rate-following pipeline. On
+Dada, repairing a missing `sampling_rate` vendor-parameter consumer inside the
+QTI HAL would require a separately validated binary adapter and is outside this
+module-XML backend.
 
 ## Layers
 
@@ -65,9 +85,21 @@ deep-buffer, direct-PCM and vendor-dynamic ports retained the same 83/83
 topology in offline validation.
 
 Application uses a validated bind mount and restarts `vendor.audio-hal-aidl`.
-The controller requires all five core AIDL services and new HAL/audioserver
-processes to recover, then verifies every selected runtime PCM profile. A
-failure unmounts the candidate and restarts the original HAL configuration.
+The controller records the live Audio Core service count before the restart,
+requires that service baseline plus new HAL/audioserver processes to recover,
+then verifies every selected runtime PCM profile. A failure unmounts the
+candidate and restarts the original HAL configuration.
+
+The Dada Android 16 baseline declares Audio Core AIDL v2 for `IConfig/default`
+and the default, USB, Bluetooth and remote-submix modules. Its init service is
+also `vendor.audio-hal-aidl`, its process is `audiohalservice.qti`, and its ODM
+source is the same `audio_module_config_primary.xml` schema used by the v3 QTI
+baseline. The recovered Dada XML shape is covered by unit tests. This proves
+offline structural compatibility; a Dada device is still required before
+claiming a successful live mount/restart/profile validation for that ROM.
+Persistent apply fails closed unless VINTF resolves to exactly one supported
+Audio Core version, currently v2 or v3; unknown or conflicting generations
+remain preview-only.
 
 ## Policy mapping
 

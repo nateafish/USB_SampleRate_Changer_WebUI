@@ -59,8 +59,8 @@ impl AudioPolicySnapshot {
     }
 
     pub fn usb_output_devices(&self) -> Vec<&AudioPort> {
-        self.modules
-            .iter()
+        self.primary_module()
+            .into_iter()
             .flat_map(|module| module.device_ports.iter())
             .filter(|port| is_usb_output(port))
             .collect()
@@ -79,7 +79,7 @@ impl AudioPolicySnapshot {
 
     pub fn usb_reachable_mix_ports(&self) -> Vec<(&str, &AudioPort)> {
         let mut result = Vec::new();
-        for module in &self.modules {
+        if let Some(module) = self.primary_module() {
             let usb_sinks = module
                 .device_ports
                 .iter()
@@ -110,6 +110,12 @@ impl AudioPolicySnapshot {
             }
         }
         result
+    }
+
+    fn primary_module(&self) -> Option<&AudioModule> {
+        self.modules
+            .iter()
+            .find(|module| module.name == "primary" || module.name == "default")
     }
 }
 
@@ -430,44 +436,96 @@ pub fn parse_module_xml(xml: &str) -> Result<AudioModule, String> {
     Ok(module)
 }
 
+pub fn parse_audio_core_aidl_versions(xml: &str) -> Vec<u32> {
+    let mut versions = Vec::new();
+    let mut cursor = 0;
+    while let Some(delta) = xml[cursor..].find("<hal") {
+        let start = cursor + delta;
+        let suffix = xml.as_bytes().get(start + "<hal".len()).copied();
+        if !suffix.is_some_and(|byte| byte.is_ascii_whitespace() || byte == b'>') {
+            cursor = start + "<hal".len();
+            continue;
+        }
+        let Some(open_end) = find_tag_end(xml, start) else {
+            break;
+        };
+        let Some(close_delta) = xml[open_end + 1..].find("</hal>") else {
+            break;
+        };
+        let close_start = open_end + 1 + close_delta;
+        let open = &xml[start + 1..open_end];
+        let body = &xml[open_end + 1..close_start];
+        if xml_attr(open, "format").as_deref() == Some("aidl")
+            && xml_element_text(body, "name") == Some("android.hardware.audio.core")
+        {
+            if let Some(version) = xml_element_text(body, "version") {
+                versions.extend(
+                    version
+                        .split(|character: char| !character.is_ascii_digit())
+                        .filter(|value| !value.is_empty())
+                        .filter_map(|value| value.parse::<u32>().ok()),
+                );
+            }
+        }
+        cursor = close_start + "</hal>".len();
+    }
+    versions.sort_unstable();
+    versions.dedup();
+    versions
+}
+
 pub fn topology_match_score(runtime: &AudioModule, config: &AudioModule) -> (usize, usize) {
-    let runtime_markers = runtime
+    let total = runtime.output_mix_ports.len()
+        + runtime.input_mix_ports.len()
+        + runtime.device_ports.len()
+        + runtime.routes.len();
+    if !module_names_equivalent(&runtime.name, &config.name) {
+        return (0, total);
+    }
+    let output_matches = runtime
         .output_mix_ports
         .iter()
-        .map(|port| ("mix", port.name.as_str()))
-        .chain(
-            runtime
-                .input_mix_ports
-                .iter()
-                .map(|port| ("mix", port.name.as_str())),
-        )
-        .chain(
-            runtime
-                .device_ports
-                .iter()
-                .map(|port| ("device", port.name.as_str())),
-        )
-        .chain(
-            runtime
-                .routes
-                .iter()
-                .map(|route| ("route", route.sink.as_str())),
-        )
-        .collect::<Vec<_>>();
-    let matched = runtime_markers
-        .iter()
-        .filter(|(kind, name)| match *kind {
-            "mix" => config
+        .filter(|runtime_port| {
+            config
                 .output_mix_ports
                 .iter()
-                .chain(config.input_mix_ports.iter())
-                .any(|port| port.name == *name),
-            "device" => config.device_ports.iter().any(|port| port.name == *name),
-            "route" => config.routes.iter().any(|route| route.sink == *name),
-            _ => false,
+                .any(|config_port| config_port.name == runtime_port.name)
         })
         .count();
-    (matched, runtime_markers.len())
+    let input_matches = runtime
+        .input_mix_ports
+        .iter()
+        .filter(|runtime_port| {
+            config
+                .input_mix_ports
+                .iter()
+                .any(|config_port| config_port.name == runtime_port.name)
+        })
+        .count();
+    let device_matches = runtime
+        .device_ports
+        .iter()
+        .filter(|runtime_port| {
+            config
+                .device_ports
+                .iter()
+                .any(|config_port| config_port.name == runtime_port.name)
+        })
+        .count();
+    let route_matches = runtime
+        .routes
+        .iter()
+        .filter(|runtime_route| {
+            config.routes.iter().any(|config_route| {
+                config_route.sink == runtime_route.sink
+                    && string_sets_equal(&config_route.sources, &runtime_route.sources)
+            })
+        })
+        .count();
+    (
+        output_matches + input_matches + device_matches + route_matches,
+        total,
+    )
 }
 
 pub fn rewrite_pcm_mix_port(
@@ -672,9 +730,18 @@ pub fn plan_policy(
                 .join(",")
         ));
     }
+    let primary_module = snapshot
+        .modules
+        .iter()
+        .find(|module| module.name == "primary" || module.name == "default")
+        .ok_or_else(|| "runtime primary/default module was not found".to_string())?;
     let mut targets = Vec::new();
     let mut skipped = Vec::new();
-    for (module, port) in snapshot.usb_reachable_mix_ports() {
+    for (module, port) in snapshot
+        .usb_reachable_mix_ports()
+        .into_iter()
+        .filter(|(module, _)| *module == primary_module.name)
+    {
         let behavior = port.behavior();
         if !behaviors.contains(&behavior) {
             continue;
@@ -728,9 +795,11 @@ pub fn apply_plan_to_module_xml(
     plan: &PolicyPlan,
 ) -> Result<String, String> {
     let mut output = xml.to_string();
-    for target in plan.targets.iter().filter(|target| {
-        target.module == module_name || module_name == "default" || module_name == "primary"
-    }) {
+    for target in plan
+        .targets
+        .iter()
+        .filter(|target| module_names_equivalent(&target.module, module_name))
+    {
         output = rewrite_pcm_mix_port(&output, &target.port, target.rate, &target.pcm_type)?;
     }
     Ok(output)
@@ -810,6 +879,24 @@ fn summarize_profiles(port: &AudioPort) -> String {
         .join(" ")
 }
 
+fn module_names_equivalent(left: &str, right: &str) -> bool {
+    left == right
+        || matches!(
+            (left, right),
+            ("primary", "default") | ("default", "primary")
+        )
+}
+
+fn string_sets_equal(left: &[String], right: &[String]) -> bool {
+    let mut left = left.to_vec();
+    let mut right = right.to_vec();
+    left.sort();
+    left.dedup();
+    right.sort();
+    right.dedup();
+    left == right
+}
+
 fn is_usb_output(port: &AudioPort) -> bool {
     let output = port
         .device_type
@@ -878,6 +965,14 @@ fn xml_attr(tag: &str, key: &str) -> Option<String> {
         cursor += 1;
     }
     None
+}
+
+fn xml_element_text<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    let open = format!("<{name}>");
+    let close = format!("</{name}>");
+    let start = xml.find(&open)? + open.len();
+    let end = xml[start..].find(&close)? + start;
+    Some(xml[start..end].trim())
 }
 
 fn get_port_mut(
@@ -1010,6 +1105,122 @@ mod tests {
         assert_eq!(module.output_mix_ports[1].behavior(), "vendor-dynamic");
         assert!(is_usb_output(&module.device_ports[0]));
         assert_eq!(module.routes[0].sources.len(), 2);
+    }
+
+    #[test]
+    fn parses_dada_aidl_v2_vintf_and_policy_shape() {
+        let manifest = r#"<manifest version="8.0" type="device">
+          <hal format="aidl"><name>android.hardware.audio.core</name><version>2</version><fqname>IConfig/default</fqname></hal>
+          <hal format="aidl"><name>android.hardware.audio.core</name><version>2</version><fqname>IModule/default</fqname></hal>
+          <hal format="aidl"><name>android.hardware.audio.core</name><version>2</version><fqname>IModule/usb</fqname></hal>
+          <hal format="hidl"><name>android.hardware.audio</name><version>7.1</version></hal>
+        </manifest>"#;
+        assert_eq!(parse_audio_core_aidl_versions(manifest), vec![2]);
+
+        let xml = r#"<modules><module name="default"><mixPorts>
+          <mixPort name="low_latency_out" role="source" flags="FAST PRIMARY">
+            <profile samplingRates="48000" channelLayouts="LAYOUT_STEREO" formatType="PCM" pcmType="INT_24_BIT"/>
+          </mixPort>
+          <mixPort name="deep_buffer_out" role="source" flags="DEEP_BUFFER">
+            <profile samplingRates="48000" channelLayouts="LAYOUT_STEREO" formatType="PCM" pcmType="INT_32_BIT"/>
+          </mixPort>
+          <mixPort name="direct_pcm_out" role="source" flags="DIRECT">
+            <profile samplingRates="44100 48000 96000 192000" channelLayouts="LAYOUT_STEREO" formatType="PCM" pcmType="INT_32_BIT"/>
+          </mixPort>
+          <mixPort name="hifi_playback" role="source"></mixPort>
+        </mixPorts><devicePorts>
+          <devicePort tagName="usb_headset" role="sink" deviceType="OUT_HEADSET" connection="usb"/>
+        </devicePorts><routes>
+          <route type="mix" sink="usb_headset" sources="low_latency_out,deep_buffer_out,direct_pcm_out,hifi_playback"/>
+        </routes></module></modules>"#;
+        let before = parse_module_xml(xml).unwrap();
+        assert_eq!(before.output_mix_ports[0].behavior(), "primary-mix");
+        assert_eq!(before.output_mix_ports[1].behavior(), "deep-buffer-mix");
+        assert_eq!(before.output_mix_ports[2].behavior(), "direct-pcm");
+        assert_eq!(before.output_mix_ports[3].behavior(), "vendor-dynamic");
+        assert!(is_usb_output(&before.device_ports[0]));
+
+        let rewritten = rewrite_pcm_mix_port(xml, "hifi_playback", 44_100, "INT_32_BIT").unwrap();
+        let after = parse_module_xml(&rewritten).unwrap();
+        assert!(structural_diff(&before, &after).is_empty());
+        assert_eq!(after.output_mix_ports[3].unique_rates(), vec![44_100]);
+    }
+
+    #[test]
+    fn parses_multiple_audio_core_aidl_manifest_fragments_without_duplicates() {
+        let manifest = r#"<manifest>
+          <hal format="aidl"><name>android.hardware.audio.core</name><version>3</version></hal>
+          <hal format="aidl"><name>android.hardware.audio.core</name><version>3</version></hal>
+          <hal format="aidl"><name>android.hardware.audio.effect</name><version>2</version></hal>
+        </manifest>"#;
+        assert_eq!(parse_audio_core_aidl_versions(manifest), vec![3]);
+    }
+
+    #[test]
+    fn topology_match_requires_module_identity_direction_and_route_sources() {
+        let mut runtime = parse_module_xml(
+            r#"<modules><module name="primary"><mixPorts>
+              <mixPort name="out" role="source" flags="PRIMARY"><profile samplingRates="48000" formatType="PCM" pcmType="INT_16_BIT"/></mixPort>
+              <mixPort name="in" role="sink"><profile samplingRates="48000" formatType="PCM" pcmType="INT_16_BIT"/></mixPort>
+            </mixPorts><devicePorts><devicePort tagName="usb" role="sink" deviceType="OUT_DEVICE" connection="usb"/></devicePorts>
+            <routes><route sink="usb" sources="out"/></routes></module></modules>"#,
+        )
+        .unwrap();
+        let config = parse_module_xml(
+            r#"<modules><module name="default"><mixPorts>
+              <mixPort name="out" role="source" flags="PRIMARY"><profile samplingRates="48000" formatType="PCM" pcmType="INT_16_BIT"/></mixPort>
+              <mixPort name="in" role="sink"><profile samplingRates="48000" formatType="PCM" pcmType="INT_16_BIT"/></mixPort>
+            </mixPorts><devicePorts><devicePort tagName="usb" role="sink" deviceType="OUT_DEVICE" connection="usb"/></devicePorts>
+            <routes><route sink="usb" sources="out"/></routes></module></modules>"#,
+        )
+        .unwrap();
+        let (matched, total) = topology_match_score(&runtime, &config);
+        assert_eq!((matched, total), (4, 4));
+
+        runtime.routes[0].sources.push("missing-source".to_string());
+        assert_eq!(topology_match_score(&runtime, &config), (3, 4));
+        runtime.name = "usb".to_string();
+        assert_eq!(topology_match_score(&runtime, &config), (0, 4));
+    }
+
+    #[test]
+    fn policy_planning_does_not_cross_into_a_separate_usb_module() {
+        let mut snapshot = parse_audio_policy_dump(FIXTURE);
+        snapshot.modules.push(AudioModule {
+            name: "usb".to_string(),
+            output_mix_ports: vec![AudioPort {
+                name: "usb_module_mix".to_string(),
+                flags: vec!["AUDIO_OUTPUT_FLAG_PRIMARY".to_string()],
+                profiles: vec![AudioProfile {
+                    format: Some("AUDIO_FORMAT_PCM_32_BIT".to_string()),
+                    rates: vec![48_000],
+                    ..AudioProfile::default()
+                }],
+                ..AudioPort::default()
+            }],
+            device_ports: vec![AudioPort {
+                name: "usb_module_sink".to_string(),
+                device_type: Some("AUDIO_DEVICE_OUT_USB_DEVICE".to_string()),
+                profiles: vec![AudioProfile {
+                    format: Some("AUDIO_FORMAT_PCM_16_BIT".to_string()),
+                    rates: vec![44_100],
+                    ..AudioProfile::default()
+                }],
+                ..AudioPort::default()
+            }],
+            routes: vec![AudioRoute {
+                sink: "usb_module_sink".to_string(),
+                sources: vec!["usb_module_mix".to_string()],
+            }],
+            ..AudioModule::default()
+        });
+        assert!(snapshot.connected_usb_output_rates().is_empty());
+        let plan = plan_policy(&snapshot, "auto", 48_000, "32").unwrap();
+        assert!(plan.targets.iter().all(|target| target.module == "primary"));
+        assert!(plan
+            .targets
+            .iter()
+            .all(|target| target.port != "usb_module_mix"));
     }
 
     #[test]

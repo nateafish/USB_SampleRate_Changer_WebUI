@@ -1848,6 +1848,77 @@ fn collect_named_files(root: &Path, name: &str, depth: usize, output: &mut BTree
     }
 }
 
+fn collect_xml_files(root: &Path, depth: usize, output: &mut BTreeSet<PathBuf>) {
+    if depth == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_file() && path.extension() == Some(OsStr::new("xml")) {
+            output.insert(path);
+        } else if file_type.is_dir() {
+            collect_xml_files(&path, depth - 1, output);
+        }
+    }
+}
+
+fn discover_audio_core_aidl_versions() -> Vec<u32> {
+    let mut manifests = BTreeSet::new();
+    for root in [
+        "/vendor/etc/vintf",
+        "/odm/etc/vintf",
+        "/product/etc/vintf",
+        "/system_ext/etc/vintf",
+        "/system/etc/vintf",
+    ] {
+        let root = Path::new(root);
+        let manifest = root.join("manifest.xml");
+        if manifest.is_file() {
+            manifests.insert(manifest);
+        }
+        collect_xml_files(&root.join("manifest"), 4, &mut manifests);
+    }
+    let mut versions = manifests
+        .iter()
+        .filter_map(|path| fs::read_to_string(path).ok())
+        .flat_map(|xml| aidl::parse_audio_core_aidl_versions(&xml))
+        .collect::<Vec<_>>();
+    versions.sort_unstable();
+    versions.dedup();
+    versions
+}
+
+fn supported_audio_core_aidl_version(versions: &[u32]) -> Option<u32> {
+    match versions {
+        [version @ (2 | 3)] => Some(*version),
+        _ => None,
+    }
+}
+
+fn ensure_supported_audio_core_aidl_version() -> Result<u32, String> {
+    let versions = discover_audio_core_aidl_versions();
+    supported_audio_core_aidl_version(&versions).ok_or_else(|| {
+        format!(
+            "persistent apply requires exactly one Audio Core AIDL v2 or v3 VINTF declaration (found: {})",
+            if versions.is_empty() {
+                "none".to_string()
+            } else {
+                versions
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            }
+        )
+    })
+}
+
 fn print_aidl_plan_preview(
     snapshot: &aidl::AudioPolicySnapshot,
     source: &AidlConfigSource,
@@ -1973,7 +2044,7 @@ fn render_aidl_reload_script(target: &Path, candidate: Option<&Path>) -> String 
         ""
     };
     format!(
-        "#!/system/bin/sh\nset -u\ntarget={target}\nold_hal=\"$(pidof audiohalservice.qti 2>/dev/null)\"\nold_audio=\"$(pidof audioserver 2>/dev/null)\"\n{prepare}setprop ctl.restart vendor.audio-hal-aidl\nok=0\nn=0\nwhile [ \"$n\" -lt 20 ]; do\n    new_hal=\"$(pidof audiohalservice.qti 2>/dev/null)\"\n    new_audio=\"$(pidof audioserver 2>/dev/null)\"\n    services=\"$(service list 2>/dev/null | grep -c android.hardware.audio.core)\"\n    if [ -n \"$new_hal\" ] && [ -n \"$new_audio\" ] && [ \"$new_hal\" != \"$old_hal\" ] && [ \"$new_audio\" != \"$old_audio\" ] && [ \"$services\" -ge 5 ]; then\n        ok=1\n        break\n    fi\n    sleep 1\n    n=$((n + 1))\ndone\nif [ \"$ok\" -ne 1 ]; then\n{rollback}    echo \"AIDL audio services did not recover\" >&2\n    exit 33\nfi\nprintf \"old_hal=%s\\nnew_hal=%s\\nold_audioserver=%s\\nnew_audioserver=%s\\naidl_services=%s\\n\" \"$old_hal\" \"$new_hal\" \"$old_audio\" \"$new_audio\" \"$services\"\n"
+        "#!/system/bin/sh\nset -u\ntarget={target}\nhal_pid() {{\n    pid=\"$(getprop init.svc_debug_pid.vendor.audio-hal-aidl 2>/dev/null)\"\n    if [ -n \"$pid\" ]; then printf '%s' \"$pid\"; else pidof audiohalservice.qti 2>/dev/null; fi\n}}\ncore_service_count() {{\n    service list 2>/dev/null | grep -c android.hardware.audio.core\n}}\nold_hal=\"$(hal_pid)\"\nold_audio=\"$(pidof audioserver 2>/dev/null)\"\nold_services=\"$(core_service_count)\"\ncase \"$old_services\" in ''|*[!0-9]*) old_services=0;; esac\nif [ -z \"$old_hal\" ] || [ -z \"$old_audio\" ] || [ \"$old_services\" -lt 2 ]; then\n    echo \"AIDL audio service baseline is incomplete\" >&2\n    exit 30\nfi\n{prepare}setprop ctl.restart vendor.audio-hal-aidl\nok=0\nn=0\nwhile [ \"$n\" -lt 20 ]; do\n    new_hal=\"$(hal_pid)\"\n    new_audio=\"$(pidof audioserver 2>/dev/null)\"\n    services=\"$(core_service_count)\"\n    case \"$services\" in ''|*[!0-9]*) services=0;; esac\n    if [ -n \"$new_hal\" ] && [ -n \"$new_audio\" ] && [ \"$new_hal\" != \"$old_hal\" ] && [ \"$new_audio\" != \"$old_audio\" ] && [ \"$services\" -ge \"$old_services\" ]; then\n        ok=1\n        break\n    fi\n    sleep 1\n    n=$((n + 1))\ndone\nif [ \"$ok\" -ne 1 ]; then\n{rollback}    echo \"AIDL audio services did not recover\" >&2\n    exit 33\nfi\nprintf \"old_hal=%s\\nnew_hal=%s\\nold_audioserver=%s\\nnew_audioserver=%s\\naidl_services_before=%s\\naidl_services=%s\\n\" \"$old_hal\" \"$new_hal\" \"$old_audio\" \"$new_audio\" \"$old_services\" \"$services\"\n"
     )
 }
 
@@ -2043,6 +2114,7 @@ fn run_aidl_operation(settings: Settings, action: Action) -> Result<i32, String>
     }
 
     let snapshot = audio_policy_snapshot()?;
+    ensure_supported_audio_core_aidl_version()?;
     let source = discover_aidl_primary_config(&snapshot)?;
     if path_is_mounted(&source.path) && !aidl_metadata_path().is_file() {
         return Err(format!(
@@ -2128,6 +2200,7 @@ fn run_aidl_restore() -> Result<i32, String> {
         println!("aidl_restore=not-configured");
         return Ok(0);
     }
+    ensure_supported_audio_core_aidl_version()?;
     let target = read_aidl_target()?;
     if path_is_mounted(&target) {
         println!("aidl_restore=already-mounted");
@@ -2166,6 +2239,24 @@ fn print_audio_backend_status() {
         Ok(snapshot) if snapshot.is_aidl() => {
             println!("audio_backend=aidl");
             println!("audio_config_source={}", snapshot.config_source);
+            let aidl_versions = discover_audio_core_aidl_versions();
+            println!(
+                "aidl_core_versions={}",
+                aidl_versions
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            if aidl_versions.len() == 1 {
+                println!("aidl_core_version={}", aidl_versions[0]);
+            }
+            let aidl_version_supported =
+                supported_audio_core_aidl_version(&aidl_versions).is_some();
+            println!(
+                "aidl_version_supported={}",
+                bool_number(aidl_version_supported)
+            );
             println!("aidl_module_count={}", snapshot.modules.len());
             println!(
                 "aidl_usb_output_device_count={}",
@@ -2211,7 +2302,15 @@ fn print_audio_backend_status() {
                     println!("aidl_config_path={}", source.path.display());
                     println!("aidl_config_topology={}/{}", source.matches, source.total);
                     println!("aidl_preview_supported=1");
-                    println!("aidl_apply_supported=1");
+                    println!(
+                        "aidl_apply_supported={}",
+                        bool_number(aidl_version_supported)
+                    );
+                    if !aidl_version_supported {
+                        println!(
+                            "aidl_config_error=persistent apply is limited to a single VINTF Audio Core AIDL v2 or v3 declaration"
+                        );
+                    }
                     println!(
                         "aidl_mount_active={}",
                         bool_number(path_is_mounted(&source.path))
@@ -2576,6 +2675,29 @@ mod tests {
         assert!(script.contains("--force-usbv2"));
         assert!(script.contains("--force-bluetooth-qti"));
         assert!(script.contains("'96000' '24'"));
+    }
+
+    #[test]
+    fn aidl_reload_uses_init_pid_and_the_live_service_baseline() {
+        let script = render_aidl_reload_script(
+            Path::new("/odm/etc/audio/audio_module_config_primary.xml"),
+            Some(Path::new("/data/adb/module/aidl/current.xml")),
+        );
+        assert!(script.contains("init.svc_debug_pid.vendor.audio-hal-aidl"));
+        assert!(script.contains("old_services=\"$(core_service_count)\""));
+        assert!(script.contains("\"$services\" -ge \"$old_services\""));
+        assert!(!script.contains("\"$services\" -ge 5"));
+        assert!(script.contains("pidof audiohalservice.qti"));
+    }
+
+    #[test]
+    fn persistent_aidl_writer_is_gated_to_one_v2_or_v3_declaration() {
+        assert_eq!(supported_audio_core_aidl_version(&[2]), Some(2));
+        assert_eq!(supported_audio_core_aidl_version(&[3]), Some(3));
+        assert_eq!(supported_audio_core_aidl_version(&[]), None);
+        assert_eq!(supported_audio_core_aidl_version(&[1]), None);
+        assert_eq!(supported_audio_core_aidl_version(&[2, 3]), None);
+        assert_eq!(supported_audio_core_aidl_version(&[4]), None);
     }
 
     #[test]
