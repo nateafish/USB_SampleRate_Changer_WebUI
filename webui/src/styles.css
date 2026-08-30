@@ -169,6 +169,10 @@ h3 { margin: 0; font-size: 15px; }
 .io-options, .wifi-option { margin-top: 13px; }
 .actions { display: flex; gap: 8px; }
 .preview-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 18px; }
+.preview-actions.single { grid-template-columns: 1fr; }
+.preview-actions.aidl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.aidl-card { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.aidl-behaviors { margin: 12px 0 0; overflow-wrap: anywhere; color: var(--accent); font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 .diagnostic-output { min-height: 150px; max-height: 330px; overflow: auto; margin: 4px 0 0; padding: 12px; border: 1px solid var(--border); border-radius: 13px; background: var(--surface-lowest); color: var(--muted); font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
 
@@ -255,6 +259,7 @@ html.reduce-motion *, html.reduce-motion *::before, html.reduce-motion *::after 
 }
 
 @media (max-width: 410px) {
+  .preview-actions.aidl { grid-template-columns: 1fr; }
   .brand-copy strong { font-size: 13px; }
   .page-nav-item { gap: 5px; }
   .page-nav-item svg { width: 17px; height: 17px; }

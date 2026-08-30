@@ -1,7 +1,7 @@
 id=usb_samplerate_changer_webui
 name=USB SampleRate Changer WebUI
-version=1.0.5
-versionCode=1005
+version=1.0.6
+versionCode=1006
 author=zyhk / WebUI wrapper by Sivon
-description=A WebUI wrapper for USB_SampleRate_Changer (*Not only for USB)
+description=Experimental AIDL v3 Audio HAL support with the original HIDL path preserved
 updateJson=https://github.com/SivonZn/USB_SampleRate_Changer_WebUI/releases/latest/download/update.json

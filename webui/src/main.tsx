@@ -95,6 +95,18 @@ const policyDetails: Record<string, string> = {
   "safest-auto": "以最大兼容模板为基础，同时自动探测 USB 采样率上限。适合未知 DAC 或旧版策略格式，但探测结果仍受内核与 USB HAL 能力限制。",
   usb: "只修改 USB 音频相关策略，不主动改变 Bluetooth 和其他内部输出。适合仅需要外接 USB DAC、并希望最大限度降低系统其他路由影响的场景。"
 };
+const aidlPolicyOverrides: Record<string, readonly [string, string, string]> = {
+  "offload-hifi-playback": [
+    "厂商动态直通",
+    "选择 USB 可达的动态输出 profile",
+    "按动态 profile、路由可达性和端口行为选择厂商直通路径，不依赖 hifi_playback 或其他专机端口名。"
+  ],
+  usb: [
+    "USB 动态端口",
+    "只规划 USB 可达的动态输出 profile",
+    "只选择能路由到 USB 输出且 profile 为动态的 mix port；不会把独立 USB accessory 模块误当作普通 USB DAC。"
+  ]
+};
 const policySelectOptions = policyOptions.map(([value, label]) => [value, label] as const);
 
 const rateOptions = [
@@ -234,6 +246,20 @@ type Status = {
   io_tone?: string;
   wifi_no_restart?: string;
   auto_reapply?: string;
+  audio_backend?: string;
+  audio_config_source?: string;
+  aidl_module_count?: string;
+  aidl_usb_output_device_count?: string;
+  aidl_usb_reachable_mix_port_count?: string;
+  aidl_usb_port_behaviors?: string;
+  aidl_usb_port_summary?: string;
+  aidl_config_adapter?: string;
+  aidl_config_path?: string;
+  aidl_config_topology?: string;
+  aidl_config_error?: string;
+  aidl_preview_supported?: string;
+  aidl_apply_supported?: string;
+  [key: `aidl_supported_rates_${string}`]: string | undefined;
   [key: `jitter_${string}`]: string | string[] | undefined;
 };
 
@@ -439,6 +465,17 @@ function initialFromStatus(status: Status): Settings {
     settings.customRate = status.sample_rate;
   }
   if (status.bit_depth) settings.bitDepth = status.bit_depth;
+  if (status.audio_backend === "aidl" && settings.policy === "legacy") settings.policy = "auto";
+  if (status.audio_backend === "aidl") {
+    const supported = status[`aidl_supported_rates_${settings.policy.replaceAll("-", "_")}`]
+      ?.split(",")
+      .filter(Boolean) ?? [];
+    const selected = settings.rate === "custom" ? settings.customRate : settings.rate;
+    if (supported.length && !supported.includes(selected)) {
+      settings.rate = supported[0];
+      settings.customRate = supported[0];
+    }
+  }
   settings.drc = status.drc === "1";
   settings.forceUsbv2 = status.force_usbv2 === "1";
   settings.forceBluetoothQti = status.force_bluetooth_qti === "1";
@@ -483,6 +520,7 @@ function App() {
       : detectLanguage();
   const [language, setLanguage] = createSignal<Language>(initialLanguage);
   const [pendingLanguage, setPendingLanguage] = createSignal<Language>(language());
+  const isAidl = createMemo(() => status().audio_backend === "aidl");
 
   createEffect(() => {
     document.documentElement.lang = language();
@@ -491,7 +529,28 @@ function App() {
   const tx = (value: string) => translate(language(), value);
   const localizeOptions = (options: ReadonlyArray<readonly [string, string]>) =>
     options.map(([value, label]) => [value, tx(label)] as const);
-  const localizePolicyOptions = () => policyOptions.map(([value, label]) => [value, tx(label)] as const);
+  const visiblePolicyOptions = () => policyOptions.filter(([value]) => !isAidl() || value !== "legacy");
+  const policyLabel = (value: string, fallback: string) => isAidl()
+    ? aidlPolicyOverrides[value]?.[0] ?? fallback
+    : fallback;
+  const policySummary = (value: string, fallback: string) => isAidl()
+    ? aidlPolicyOverrides[value]?.[1] ?? fallback
+    : fallback;
+  const policyDescription = (value: string) => isAidl()
+    ? aidlPolicyOverrides[value]?.[2] ?? policyDetails[value]
+    : policyDetails[value];
+  const localizePolicyOptions = () => visiblePolicyOptions()
+    .map(([value, label]) => [value, tx(policyLabel(value, label))] as const);
+  const availableRateOptions = () => {
+    if (!isAidl()) return rateSelectOptions;
+    const policyKey = settings().policy.replaceAll("-", "_");
+    const supported = status()[`aidl_supported_rates_${policyKey}`]?.split(",").filter(Boolean);
+    if (!supported?.length) return rateSelectOptions;
+    return [
+      ...rateOptions.filter(([rate]) => supported.includes(rate)),
+      ["custom", "自定义整数（44100–768000 Hz）"] as const
+    ];
+  };
 
   let pageViewport: HTMLDivElement | undefined;
   let carousel: EmblaCarouselType | undefined;
@@ -690,6 +749,11 @@ function App() {
     }
     setBusy(true);
     try {
+      if (isAidl() && !await confirmWebUi(
+        "应用 AIDL 音频策略",
+        "将把已校验的候选 XML 临时挂载到实际配置来源，并重启 AIDL Audio HAL 与 audioserver。当前音频会短暂中断；若服务或运行时 profile 校验失败，控制器会自动卸载并恢复原始配置。",
+        "确认应用"
+      )) return;
       if (!await confirmApplyWithConnectedA2dp()) return;
       showToast(tx("正在应用更改，音频将会短暂断开"));
       const command = `${CONTROLLER} apply ${controllerArgs(current)}`;
@@ -709,6 +773,54 @@ function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function previewAidl() {
+    const current = settings();
+    const numericRate = Number(rateValue(current));
+    if (!Number.isInteger(numericRate) || numericRate < 44100 || numericRate > 768000) {
+      showToast(tx("采样率必须是 44100–768000 Hz 的整数"), "error");
+      return;
+    }
+    setBusy(true);
+    try {
+      const command = `${CONTROLLER} aidl-preview ${[
+        current.policy,
+        String(numericRate),
+        current.bitDepth
+      ].map(shellQuote).join(" ")}`;
+      const result = await rootExec(command);
+      const text = `${result.stdout}${result.stderr ? `\n[stderr]\n${result.stderr}` : ""}`.trim();
+      setLog(text || `exit=${result.code}`);
+      if (result.code !== 0) throw new Error(text || `AIDL 预览失败，退出码 ${result.code}`);
+      openOverlay("log");
+      showToast(tx("AIDL 候选配置预览已生成"), "success");
+    } catch (error) {
+      showToast(String(error), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function changePolicy(value: string) {
+    if (!isAidl()) {
+      update("policy", value);
+      return;
+    }
+    const supported = status()[`aidl_supported_rates_${value.replaceAll("-", "_")}`]
+      ?.split(",")
+      .filter(Boolean) ?? [];
+    setSettings((current) => {
+      const currentRate = rateValue(current);
+      const nextRate = supported.length && !supported.includes(currentRate) ? supported[0] : currentRate;
+      const known = rateOptions.some(([rate]) => rate === nextRate);
+      return {
+        ...current,
+        policy: value,
+        rate: known ? nextRate : "custom",
+        customRate: nextRate
+      };
+    });
   }
 
   async function reset() {
@@ -1021,22 +1133,23 @@ function App() {
               <main class="page-content">
                 <section class="card preview-card">
                   <div class="section-heading"><h2>{tx("本次执行")}</h2></div>
-                  <div class="summary-line"><span class="summary-key">{tx("策略")}</span><strong>{tx(policyOptions.find(([value]) => value === settings().policy)?.[1] ?? "")}</strong><span class="summary-key">{tx("格式")}</span><strong>{tx(displayRate(rateValue(settings())))} · {tx(bitOptions.find(([value]) => value === settings().bitDepth)?.[1] ?? "")}</strong></div>
+                  <div class="summary-line"><span class="summary-key">{tx("策略")}</span><strong>{tx(policyLabel(settings().policy, policyOptions.find(([value]) => value === settings().policy)?.[1] ?? ""))}</strong><span class="summary-key">{tx("格式")}</span><strong>{tx(displayRate(rateValue(settings())))} · {tx(bitOptions.find(([value]) => value === settings().bitDepth)?.[1] ?? "")}</strong></div>
                   <div class="tag-row"><Show when={settings().drc}><span class="tag">DRC</span></Show><Show when={settings().forceUsbv2}><span class="tag">USBv2</span></Show><Show when={settings().forceBluetoothQti}><span class="tag">Bluetooth QTI</span></Show></div>
-                  <div class="preview-actions"><button class="secondary-button" onClick={() => openConfirm({ title: "重置音频策略", message: "将卸载生成的 audio policy bind mount，并重启音频服务。当前音频连接可能会短暂中断。", confirmLabel: "确认重置", action: () => void reset() })} disabled={busy()}>{tx("重置")}</button><button class="primary-button" onClick={apply} disabled={busy()}>{busy() ? tx("处理中…") : tx("应用")}</button></div>
+                  <Show when={isAidl()}><div class="notice"><WarningIcon /><span>{tx("当前为 AIDL Audio HAL。你可以先生成只读预览；点击应用后会挂载已校验的候选配置并重启音频服务，失败时自动恢复原始配置。")}</span></div></Show>
+                  <div class={`preview-actions ${isAidl() ? "aidl" : ""}`}><button class="secondary-button" onClick={() => openConfirm({ title: "重置音频策略", message: isAidl() ? "将卸载 AIDL module XML，并重启 Audio HAL 与 audioserver 恢复原始配置。当前音频会短暂中断。" : "将卸载生成的 audio policy bind mount，并重启音频服务。当前音频连接可能会短暂中断。", confirmLabel: "确认重置", action: () => void reset() })} disabled={busy()}>{tx("重置")}</button><Show when={isAidl()}><button class="secondary-button" onClick={() => void previewAidl()} disabled={busy() || status().aidl_preview_supported !== "1"}>{tx("生成只读预览")}</button></Show><button class="primary-button" onClick={() => void apply()} disabled={busy() || (isAidl() && status().aidl_apply_supported !== "1")}>{busy() ? tx("处理中…") : tx("应用")}</button></div>
                 </section>
 
                 <section class="grid two-col">
                   <article class="card section-card">
                     <SectionHeading title={tx("音频策略")} />
                     <div class="field-label-row"><label class="field-label" for="policy">{tx("策略模板")}</label><button type="button" class="inline-link" onClick={() => openOverlay("policy-help")}>ⓘ {tx("说明")}</button></div>
-                    <SelectField id="policy" title={tx("选择策略模板")} value={settings().policy} options={localizePolicyOptions()} language={language()} onChange={(value) => update("policy", value)} />
+                    <SelectField id="policy" title={tx("选择策略模板")} value={settings().policy} options={localizePolicyOptions()} language={language()} onChange={changePolicy} />
                   </article>
 
                   <article class="card section-card">
                     <SectionHeading title={tx("采样格式")} />
                     <label class="field-label" for="rate">{tx("采样率")}</label>
-                    <SelectField id="rate" title={tx("选择采样率")} value={settings().rate} options={localizeOptions(rateSelectOptions)} language={language()} onChange={changeRate} />
+                    <SelectField id="rate" title={tx("选择采样率")} value={settings().rate} options={localizeOptions(availableRateOptions())} language={language()} onChange={changeRate} />
                     <Show when={settings().rate === "custom"}><input class="number-input spaced-input page-swipe-input" inputmode="numeric" type="number" min="44100" max="768000" step="1" value={settings().customRate} onInput={(event) => update("customRate", event.currentTarget.value)} placeholder={tx("例如 123456")} /></Show>
                     <label class="field-label" for="bits">{tx("位深 / 格式")}</label>
                     <SelectField id="bits" title={tx("选择位深与格式")} value={settings().bitDepth} options={localizeOptions(bitOptions)} language={language()} onChange={(value) => update("bitDepth", value)} />
@@ -1052,9 +1165,21 @@ function App() {
                   </div>
                 </section>
 
+                <Show when={isAidl()}><section class="card section-card aidl-card">
+                  <SectionHeading title={tx("AIDL v3 适配状态")} />
+                  <div class="about-details">
+                    <div><span>{tx("配置适配器")}</span><strong>{status().aidl_config_adapter || "read-only"}</strong></div>
+                    <div><span>{tx("配置来源")}</span><strong>{status().aidl_config_path || status().audio_config_source || "—"}</strong></div>
+                    <div><span>{tx("拓扑匹配")}</span><strong>{status().aidl_config_topology || "—"}</strong></div>
+                    <div><span>{tx("USB 可达端口")}</span><strong>{status().aidl_usb_reachable_mix_port_count || "0"}</strong></div>
+                  </div>
+                  <p class="field-help">{tx("端口按 flags、动态 profile 和 USB 路由可达性分类，不依赖 hifi_playback 等厂商名字。")}</p>
+                  <p class="aidl-behaviors">{status().aidl_usb_port_behaviors || status().aidl_config_error || "—"}</p>
+                </section></Show>
+
                 <section class="status-strip card">
                   <div><span class="label">audioserver</span><strong>{status().audioserver_pid || tx("未检测到")}</strong></div>
-                  <div><span class="label">{tx("脚本版本")}</span><strong>{status().script_version || "—"}</strong></div>
+                  <div><span class="label">Audio HAL</span><strong>{isAidl() ? "AIDL v3" : tx("传统 / HIDL")}</strong></div>
                   <div><span class="label">{tx("当前采样率")}</span><strong>{status().sample_rate ? tx(displayRate(status().sample_rate ?? "")) : "—"}</strong></div>
                   <div><span class="label">Bluetooth A2DP</span><strong>{status().bluetooth_a2dp_connected === "1" ? tx("已连接") : tx("未连接")}</strong></div>
                 </section>
@@ -1190,7 +1315,7 @@ function App() {
           <section class="info-dialog" role="dialog" aria-modal="true" aria-labelledby="policy-help-title">
             <header><div><h2 id="policy-help-title">{tx("策略模板说明")}</h2><p>{tx("模板决定生成 audio policy XML 时保留或绕过哪些输出路径；最终结果仍受 ROM、HAL 和设备能力影响。")}</p></div><button class="dialog-close" aria-label={tx("关闭模板说明")} onClick={() => closeOverlay("policy-help")}>×</button></header>
             <div class="policy-guide-list">
-              <For each={policyOptions}>{([value, label, summary]) => <article classList={{ current: value === settings().policy }}><div><h3>{tx(label)}</h3><Show when={value === settings().policy}><span>{tx("当前选择")}</span></Show></div><p class="policy-summary">{tx(summary)}</p><p>{tx(policyDetails[value])}</p></article>}</For>
+              <For each={visiblePolicyOptions()}>{([value, label, summary]) => <article classList={{ current: value === settings().policy }}><div><h3>{tx(policyLabel(value, label))}</h3><Show when={value === settings().policy}><span>{tx("当前选择")}</span></Show></div><p class="policy-summary">{tx(policySummary(value, summary))}</p><p>{tx(policyDescription(value))}</p></article>}</For>
             </div>
           </section>
         </div>

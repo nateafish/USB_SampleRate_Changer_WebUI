@@ -18,8 +18,13 @@ SETTINGS="$STATE_ROOT/settings.conf"
         i=$((i + 1))
     done
     [ "$(getprop init.svc.audioserver)" = "running" ] || exit 0
+    [ -x "$MODDIR/usbsrctl" ] || exit 0
+
+    # AIDL policy topology is reconstructed by the HAL process. Restore a
+    # previously validated module XML before optional tool/tuning reapply.
+    "$MODDIR/usbsrctl" aidl-restore >>"$STATE_ROOT/boot-aidl-restore.log" 2>&1 || true
+
     [ -r "$SETTINGS" ] || exit 0
     grep -q '^auto_reapply=1$' "$SETTINGS" || exit 0
-    [ -x "$MODDIR/usbsrctl" ] || exit 0
     "$MODDIR/usbsrctl" reapply >>"$STATE_ROOT/boot-reapply.log" 2>&1 || true
 ) &

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
@@ -7,6 +7,8 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+mod aidl;
 
 const CONTROLLER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const STATE_ROOT: &str = "/data/adb/usb_samplerate_changer_webui";
@@ -268,6 +270,169 @@ fn run() -> Result<i32, String> {
             print_generated()?;
             Ok(0)
         }
+        Some("aidl-inspect") if args.len() == 2 => {
+            print_aidl_inspect()?;
+            Ok(0)
+        }
+        Some("aidl-inspect-stdin") if args.len() == 2 => {
+            let mut dump = String::new();
+            std::io::stdin()
+                .read_to_string(&mut dump)
+                .map_err(|error| format!("cannot read audio policy dump: {error}"))?;
+            print_aidl_snapshot(&aidl::parse_audio_policy_dump(&dump))?;
+            Ok(0)
+        }
+        Some("aidl-preview") if args.len() == 5 => {
+            let snapshot = audio_policy_snapshot()?;
+            let source = discover_aidl_primary_config(&snapshot)?;
+            print_aidl_plan_preview(&snapshot, &source, &args[2], &args[3], &args[4])?;
+            Ok(0)
+        }
+        Some("aidl-match-stdin") if args.len() == 3 => {
+            let mut dump = String::new();
+            std::io::stdin()
+                .read_to_string(&mut dump)
+                .map_err(|error| format!("cannot read audio policy dump: {error}"))?;
+            let xml = fs::read_to_string(&args[2])
+                .map_err(|error| format!("cannot read {}: {error}", args[2]))?;
+            let snapshot = aidl::parse_audio_policy_dump(&dump);
+            let config = aidl::parse_module_xml(&xml)?;
+            let runtime = snapshot
+                .modules
+                .iter()
+                .find(|module| module.name == "primary" || module.name == "default")
+                .ok_or_else(|| "runtime primary/default module was not found".to_string())?;
+            let (matched, total) = aidl::topology_match_score(runtime, &config);
+            println!("runtime_module={}", runtime.name);
+            println!("config_module={}", config.name);
+            println!("topology_matches={matched}");
+            println!("topology_total={total}");
+            println!(
+                "topology_match_percent={}",
+                if total == 0 { 0 } else { matched * 100 / total }
+            );
+            Ok(0)
+        }
+        Some("aidl-rewrite-validate-stdin") if args.len() == 6 => {
+            let mut dump = String::new();
+            std::io::stdin()
+                .read_to_string(&mut dump)
+                .map_err(|error| format!("cannot read audio policy dump: {error}"))?;
+            let source = fs::read_to_string(&args[2])
+                .map_err(|error| format!("cannot read {}: {error}", args[2]))?;
+            let rate = args[4]
+                .parse::<u32>()
+                .map_err(|_| format!("invalid sample rate: {}", args[4]))?;
+            let pcm_type = match args[5].as_str() {
+                "16" => "INT_16_BIT",
+                "24" => "INT_24_BIT",
+                "32" => "INT_32_BIT",
+                "float" => "FLOAT_32_BIT",
+                value => return Err(format!("unsupported bit depth: {value}")),
+            };
+            let snapshot = aidl::parse_audio_policy_dump(&dump);
+            let runtime = snapshot
+                .modules
+                .iter()
+                .find(|module| module.name == "primary" || module.name == "default")
+                .ok_or_else(|| "runtime primary/default module was not found".to_string())?;
+            let source_model = aidl::parse_module_xml(&source)?;
+            let (source_matches, source_total) = aidl::topology_match_score(runtime, &source_model);
+            if source_total == 0 || source_matches != source_total {
+                return Err(format!(
+                    "source XML topology mismatch: {source_matches}/{source_total}"
+                ));
+            }
+            let rewritten = aidl::rewrite_pcm_mix_port(&source, &args[3], rate, pcm_type)?;
+            let rewritten_model = aidl::parse_module_xml(&rewritten)?;
+            let (result_matches, result_total) =
+                aidl::topology_match_score(runtime, &rewritten_model);
+            if result_matches != result_total {
+                return Err(format!(
+                    "rewritten XML topology mismatch: {result_matches}/{result_total}"
+                ));
+            }
+            let port = rewritten_model
+                .output_mix_ports
+                .iter()
+                .find(|port| port.name == args[3])
+                .ok_or_else(|| "rewritten mix port disappeared".to_string())?;
+            println!("source_topology={source_matches}/{source_total}");
+            println!("result_topology={result_matches}/{result_total}");
+            println!("target_mix_port={}", port.name);
+            println!("target_behavior={}", port.behavior());
+            println!("target_rate={rate}");
+            println!("target_pcm_type={pcm_type}");
+            println!("source_bytes={}", source.len());
+            println!("result_bytes={}", rewritten.len());
+            Ok(0)
+        }
+        Some("aidl-plan-stdin") if args.len() == 6 || args.len() == 7 => {
+            let mut dump = String::new();
+            std::io::stdin()
+                .read_to_string(&mut dump)
+                .map_err(|error| format!("cannot read audio policy dump: {error}"))?;
+            let rate = normalize_sample_rate(&args[4])?;
+            let source = fs::read_to_string(&args[2])
+                .map_err(|error| format!("cannot read {}: {error}", args[2]))?;
+            let snapshot = aidl::parse_audio_policy_dump(&dump);
+            let runtime = snapshot
+                .modules
+                .iter()
+                .find(|module| module.name == "primary" || module.name == "default")
+                .ok_or_else(|| "runtime primary/default module was not found".to_string())?;
+            let before = aidl::parse_module_xml(&source)?;
+            let (source_matches, source_total) = aidl::topology_match_score(runtime, &before);
+            if source_total == 0 || source_matches != source_total {
+                return Err(format!(
+                    "source XML topology mismatch: {source_matches}/{source_total}"
+                ));
+            }
+            let plan = aidl::plan_policy(&snapshot, &args[3], rate, &args[5])?;
+            let candidate = aidl::apply_plan_to_module_xml(&source, &before.name, &plan)?;
+            let after = aidl::parse_module_xml(&candidate)?;
+            let (result_matches, result_total) = aidl::topology_match_score(runtime, &after);
+            if result_matches != result_total {
+                return Err(format!(
+                    "candidate XML topology mismatch: {result_matches}/{result_total}"
+                ));
+            }
+            let structural = aidl::structural_diff(&before, &after);
+            if !structural.is_empty() {
+                return Err(format!(
+                    "candidate changes module structure: {}",
+                    structural.join("; ")
+                ));
+            }
+            println!("policy={}", plan.policy);
+            println!("runtime_module={}", runtime.name);
+            println!("config_module={}", before.name);
+            println!("source_topology={source_matches}/{source_total}");
+            println!("candidate_topology={result_matches}/{result_total}");
+            for target in &plan.targets {
+                println!(
+                    "target={}|{}|{}|{}|{}",
+                    target.module,
+                    target.port,
+                    target.behavior,
+                    target.rate,
+                    target.pcm_type
+                );
+            }
+            for (port, behavior, reason) in &plan.skipped {
+                println!("skipped={port}|{behavior}|{reason}");
+            }
+            for change in aidl::profile_diff(&before, &after) {
+                println!("profile_change={change}");
+            }
+            println!("structure_changes=0");
+            if let Some(destination) = args.get(6) {
+                atomic_write(Path::new(destination), candidate.as_bytes(), 0o644)?;
+                println!("candidate_written={destination}");
+            }
+            println!("apply_enabled=0");
+            Ok(0)
+        }
         Some("preview") => {
             let settings = parse_settings_args(&args[2..])?;
             validate_settings(&settings, &module_dir()?)?;
@@ -279,14 +444,24 @@ fn run() -> Result<i32, String> {
         }
         Some("apply") => {
             let settings = parse_settings_args(&args[2..])?;
+            if audio_policy_snapshot().is_ok_and(|snapshot| snapshot.is_aidl()) {
+                return run_aidl_operation(settings, Action::Apply);
+            }
             run_operation(settings, Action::Apply)
         }
-        Some("reset") if args.len() == 2 => run_operation(Settings::default(), Action::Reset),
+        Some("reset") if args.len() == 2 => {
+            if audio_policy_snapshot().is_ok_and(|snapshot| snapshot.is_aidl()) {
+                run_aidl_operation(Settings::default(), Action::Reset)
+            } else {
+                run_operation(Settings::default(), Action::Reset)
+            }
+        }
+        Some("aidl-restore") if args.len() == 2 => run_aidl_restore(),
         Some("extra") => run_extra(&args[2..]),
         Some("settings") => run_settings_command(&args[2..]),
         Some("reapply") if args.len() == 2 => run_reapply(),
         _ => Err(format!(
-            "usage: {} {{schema|status|logs|generated|preview OPTIONS|apply OPTIONS|reset|extra TOOL ACTION|settings auto-reapply enable|disable|reapply}}",
+            "usage: {} {{schema|status|logs|generated|aidl-inspect|aidl-inspect-stdin|aidl-preview POLICY RATE DEPTH|aidl-restore|aidl-match-stdin XML|aidl-rewrite-validate-stdin XML PORT RATE DEPTH|aidl-plan-stdin XML POLICY RATE DEPTH [OUT]|preview OPTIONS|apply OPTIONS|reset|extra TOOL ACTION|settings auto-reapply enable|disable|reapply}}",
             args.first().map(String::as_str).unwrap_or("usbsrctl")
         )),
     }
@@ -1210,9 +1385,14 @@ fn parse_stored_settings(content: &str) -> StoredSettings {
 }
 
 fn load_stored_settings() -> StoredSettings {
-    fs::read_to_string(state_root().join("settings.conf"))
+    let mut settings = fs::read_to_string(state_root().join("settings.conf"))
         .map(|content| parse_stored_settings(&content))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if settings.resampler_configured && settings.resampler_preset != "custom" {
+        let preset = settings.resampler_preset.clone();
+        store_resampler_preset(&mut settings, &preset);
+    }
+    settings
 }
 
 fn save_stored_settings(settings: &StoredSettings) -> Result<(), String> {
@@ -1243,6 +1423,37 @@ fn persist_extra_settings(args: &[String]) -> Result<(), String> {
         save_stored_settings(&settings)?;
     }
     Ok(())
+}
+
+fn store_resampler_preset(settings: &mut StoredSettings, preset: &str) {
+    let Some((_, values)) = RESAMPLER_PRESETS.iter().find(|(name, _)| *name == preset) else {
+        return;
+    };
+    settings.resampler_preset = preset.to_string();
+    settings.resampler_bypass = if values.contains(&"--bypass-hires") {
+        "96"
+    } else if values.contains(&"--bypass") {
+        "48"
+    } else {
+        "none"
+    }
+    .to_string();
+    settings.resampler_cheat = values.contains(&"--cheat") || values.is_empty();
+    let numbers = values
+        .iter()
+        .filter_map(|value| value.parse::<u32>().ok())
+        .collect::<Vec<_>>();
+    if let [stop_band, half_length, percent] = numbers.as_slice() {
+        settings.resampler_stop_band = *stop_band;
+        settings.resampler_half_length = *half_length;
+        settings.resampler_percent = *percent;
+    } else if values.is_empty() {
+        let defaults = StoredSettings::default();
+        settings.resampler_stop_band = defaults.resampler_stop_band;
+        settings.resampler_half_length = defaults.resampler_half_length;
+        settings.resampler_percent = defaults.resampler_percent;
+    }
+    settings.resampler_configured = true;
 }
 
 fn update_stored_settings_for_extra(settings: &mut StoredSettings, args: &[String]) -> bool {
@@ -1282,8 +1493,7 @@ fn update_stored_settings_for_extra(settings: &mut StoredSettings, args: &[Strin
                 true
             }
             Some(preset) => {
-                settings.resampler_preset = preset.to_string();
-                settings.resampler_configured = true;
+                store_resampler_preset(settings, preset);
                 true
             }
         },
@@ -1364,10 +1574,21 @@ fn run_reapply() -> Result<i32, String> {
         return Ok(0);
     }
     let plan = build_reapply_plan(&stored);
+    let aidl_policy_restored = read_aidl_target().is_ok_and(|target| path_is_mounted(&target));
     let mut applied = 0;
     for action in plan {
         let code = match action {
-            ReapplyAction::Policy(settings) => run_operation(settings, Action::Apply)?,
+            ReapplyAction::Policy(_) if aidl_policy_restored => {
+                println!("aidl_policy_reapply=already-restored");
+                continue;
+            }
+            ReapplyAction::Policy(settings) => {
+                if audio_policy_snapshot().is_ok_and(|snapshot| snapshot.is_aidl()) {
+                    run_aidl_operation(settings, Action::Apply)?
+                } else {
+                    run_operation(settings, Action::Apply)?
+                }
+            }
             ReapplyAction::Extra(args) => run_extra(&args)?,
         };
         if code != 0 {
@@ -1517,10 +1738,562 @@ fn print_status(module_dir: &Path) {
             None => "unknown",
         }
     );
+    print_audio_backend_status();
     if let Ok(last_status) = fs::read_to_string(state_root().join("last.status")) {
         print!("{last_status}");
     }
     print_templates(module_dir);
+}
+
+fn audio_policy_snapshot() -> Result<aidl::AudioPolicySnapshot, String> {
+    let output = Command::new("dumpsys")
+        .arg("media.audio_policy")
+        .output()
+        .map_err(|error| format!("cannot run media.audio_policy dump: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "media.audio_policy dump failed with status {}",
+            output.status
+        ));
+    }
+    Ok(aidl::parse_audio_policy_dump(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+#[derive(Clone, Debug)]
+struct AidlConfigSource {
+    path: PathBuf,
+    xml: String,
+    model: aidl::AudioModule,
+    matches: usize,
+    total: usize,
+}
+
+fn discover_aidl_primary_config(
+    snapshot: &aidl::AudioPolicySnapshot,
+) -> Result<AidlConfigSource, String> {
+    if !snapshot.is_aidl() {
+        return Err(format!(
+            "active audio policy is not AIDL: {}",
+            snapshot.config_source
+        ));
+    }
+    let runtime = snapshot
+        .modules
+        .iter()
+        .find(|module| module.name == "primary" || module.name == "default")
+        .ok_or_else(|| "runtime primary/default module was not found".to_string())?;
+    let mut candidates = BTreeSet::new();
+    for root in [
+        "/odm/etc/audio",
+        "/vendor/etc/audio",
+        "/product/etc/audio",
+        "/system_ext/etc/audio",
+        "/system/etc/audio",
+    ] {
+        collect_named_files(
+            Path::new(root),
+            "audio_module_config_primary.xml",
+            3,
+            &mut candidates,
+        );
+    }
+    let mut matches = Vec::new();
+    for path in candidates {
+        let Ok(xml) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(model) = aidl::parse_module_xml(&xml) else {
+            continue;
+        };
+        let (matched, total) = aidl::topology_match_score(runtime, &model);
+        if total > 0 && matched == total {
+            matches.push(AidlConfigSource {
+                path,
+                xml,
+                model,
+                matches: matched,
+                total,
+            });
+        }
+    }
+    match matches.len() {
+        0 => Err("no audio_module_config_primary.xml fully matches the live AIDL topology"
+            .to_string()),
+        1 => Ok(matches.remove(0)),
+        count => Err(format!(
+            "{count} audio_module_config_primary.xml files fully match the live AIDL topology; refusing an ambiguous writer"
+        )),
+    }
+}
+
+fn collect_named_files(root: &Path, name: &str, depth: usize, output: &mut BTreeSet<PathBuf>) {
+    if depth == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_file() && entry.file_name() == OsStr::new(name) {
+            output.insert(path);
+        } else if file_type.is_dir() {
+            collect_named_files(&path, name, depth - 1, output);
+        }
+    }
+}
+
+fn print_aidl_plan_preview(
+    snapshot: &aidl::AudioPolicySnapshot,
+    source: &AidlConfigSource,
+    policy: &str,
+    rate: &str,
+    bit_depth: &str,
+) -> Result<(), String> {
+    let rate = normalize_sample_rate(rate)?;
+    let runtime = snapshot
+        .modules
+        .iter()
+        .find(|module| module.name == "primary" || module.name == "default")
+        .ok_or_else(|| "runtime primary/default module was not found".to_string())?;
+    let plan = aidl::plan_policy(snapshot, policy, rate, bit_depth)?;
+    let candidate = aidl::apply_plan_to_module_xml(&source.xml, &source.model.name, &plan)?;
+    let after = aidl::parse_module_xml(&candidate)?;
+    let (candidate_matches, candidate_total) = aidl::topology_match_score(runtime, &after);
+    if candidate_total == 0 || candidate_matches != candidate_total {
+        return Err(format!(
+            "candidate XML topology mismatch: {candidate_matches}/{candidate_total}"
+        ));
+    }
+    let structural = aidl::structural_diff(&source.model, &after);
+    if !structural.is_empty() {
+        return Err(format!(
+            "candidate changes module structure: {}",
+            structural.join("; ")
+        ));
+    }
+    println!("audio_backend=aidl");
+    println!("config_adapter=module-xml");
+    println!("config_path={}", source.path.display());
+    println!("policy={}", plan.policy);
+    println!("runtime_module={}", runtime.name);
+    println!("config_module={}", source.model.name);
+    println!("source_topology={}/{}", source.matches, source.total);
+    println!("candidate_topology={candidate_matches}/{candidate_total}");
+    for target in &plan.targets {
+        println!(
+            "target={}|{}|{}|{}|{}",
+            target.module, target.port, target.behavior, target.rate, target.pcm_type
+        );
+    }
+    for (port, behavior, reason) in &plan.skipped {
+        println!("skipped={port}|{behavior}|{reason}");
+    }
+    for change in aidl::profile_diff(&source.model, &after) {
+        println!("profile_change={change}");
+    }
+    println!("structure_changes=0");
+    println!("candidate_bytes={}", candidate.len());
+    println!("apply_enabled=0");
+    Ok(())
+}
+
+fn aidl_state_dir() -> PathBuf {
+    state_root().join("aidl")
+}
+
+fn aidl_metadata_path() -> PathBuf {
+    aidl_state_dir().join("active.conf")
+}
+
+fn aidl_original_path() -> PathBuf {
+    aidl_state_dir().join("original.xml")
+}
+
+fn aidl_candidate_path() -> PathBuf {
+    aidl_state_dir().join("current.xml")
+}
+
+fn read_aidl_target() -> Result<PathBuf, String> {
+    let content = fs::read_to_string(aidl_metadata_path())
+        .map_err(|error| format!("cannot read AIDL state metadata: {error}"))?;
+    let target = content
+        .lines()
+        .find_map(|line| line.strip_prefix("target="))
+        .filter(|value| value.starts_with('/') && !value.contains(".."))
+        .ok_or_else(|| "AIDL state metadata has no safe target".to_string())?;
+    Ok(PathBuf::from(target))
+}
+
+fn path_is_mounted(target: &Path) -> bool {
+    let Ok(mountinfo) = fs::read_to_string("/proc/self/mountinfo") else {
+        return false;
+    };
+    let target = target.to_string_lossy();
+    mountinfo.lines().any(|line| {
+        line.split_whitespace()
+            .nth(4)
+            .is_some_and(|mountpoint| mountpoint == target)
+    })
+}
+
+fn set_vendor_config_context(path: &Path) -> Result<(), String> {
+    let status = Command::new("chcon")
+        .args(["u:object_r:vendor_configs_file:s0"])
+        .arg(path)
+        .status()
+        .map_err(|error| format!("cannot label {}: {error}", path.display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "cannot label {} as vendor configuration",
+            path.display()
+        ))
+    }
+}
+
+fn render_aidl_reload_script(target: &Path, candidate: Option<&Path>) -> String {
+    let target = shell_quote(&target.to_string_lossy());
+    let prepare = match candidate {
+        Some(candidate) => format!(
+            "if grep -Fq \" $target \" /proc/self/mountinfo; then umount \"$target\" || exit 31; fi\nmount --bind {} \"$target\" || exit 32\n",
+            shell_quote(&candidate.to_string_lossy())
+        ),
+        None => "if grep -Fq \" $target \" /proc/self/mountinfo; then umount \"$target\" || exit 31; fi\n".to_string(),
+    };
+    let rollback = if candidate.is_some() {
+        "    umount \"$target\" 2>/dev/null || true\n    setprop ctl.restart vendor.audio-hal-aidl\n    sleep 5\n"
+    } else {
+        ""
+    };
+    format!(
+        "#!/system/bin/sh\nset -u\ntarget={target}\nold_hal=\"$(pidof audiohalservice.qti 2>/dev/null)\"\nold_audio=\"$(pidof audioserver 2>/dev/null)\"\n{prepare}setprop ctl.restart vendor.audio-hal-aidl\nok=0\nn=0\nwhile [ \"$n\" -lt 20 ]; do\n    new_hal=\"$(pidof audiohalservice.qti 2>/dev/null)\"\n    new_audio=\"$(pidof audioserver 2>/dev/null)\"\n    services=\"$(service list 2>/dev/null | grep -c android.hardware.audio.core)\"\n    if [ -n \"$new_hal\" ] && [ -n \"$new_audio\" ] && [ \"$new_hal\" != \"$old_hal\" ] && [ \"$new_audio\" != \"$old_audio\" ] && [ \"$services\" -ge 5 ]; then\n        ok=1\n        break\n    fi\n    sleep 1\n    n=$((n + 1))\ndone\nif [ \"$ok\" -ne 1 ]; then\n{rollback}    echo \"AIDL audio services did not recover\" >&2\n    exit 33\nfi\nprintf \"old_hal=%s\\nnew_hal=%s\\nold_audioserver=%s\\nnew_audioserver=%s\\naidl_services=%s\\n\" \"$old_hal\" \"$new_hal\" \"$old_audio\" \"$new_audio\" \"$services\"\n"
+    )
+}
+
+fn validate_loaded_aidl_plan(
+    snapshot: &aidl::AudioPolicySnapshot,
+    plan: &aidl::PolicyPlan,
+) -> Result<(), String> {
+    for target in &plan.targets {
+        let module = snapshot
+            .modules
+            .iter()
+            .find(|module| module.name == target.module || module.name == "primary")
+            .ok_or_else(|| format!("loaded module {} is missing", target.module))?;
+        let port = module
+            .output_mix_ports
+            .iter()
+            .find(|port| port.name == target.port)
+            .ok_or_else(|| format!("loaded mix port {} is missing", target.port))?;
+        let expected_format = match target.pcm_type.as_str() {
+            "INT_16_BIT" => "AUDIO_FORMAT_PCM_16_BIT",
+            "INT_24_BIT" => "AUDIO_FORMAT_PCM_24_BIT_PACKED",
+            "INT_32_BIT" => "AUDIO_FORMAT_PCM_32_BIT",
+            "FLOAT_32_BIT" => "AUDIO_FORMAT_PCM_FLOAT",
+            value => return Err(format!("unsupported loaded PCM type: {value}")),
+        };
+        if !port.profiles.iter().any(|profile| {
+            profile.rates.contains(&target.rate)
+                && profile.format.as_deref() == Some(expected_format)
+        }) {
+            return Err(format!(
+                "loaded mix port {} does not expose {} at {} Hz",
+                target.port, expected_format, target.rate
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn run_aidl_operation(settings: Settings, action: Action) -> Result<i32, String> {
+    ensure_state_layout()?;
+    fs::create_dir_all(aidl_state_dir())
+        .map_err(|error| format!("cannot create AIDL state directory: {error}"))?;
+    set_mode(&aidl_state_dir(), 0o700)?;
+    let _lock = acquire_lock()?;
+
+    if matches!(action, Action::Reset) {
+        let target = match read_aidl_target() {
+            Ok(target) => target,
+            Err(_) => discover_aidl_primary_config(&audio_policy_snapshot()?)?.path,
+        };
+        let generated_path = state_root().join("generated/aidl-reset.sh");
+        let generated = render_aidl_reload_script(&target, None);
+        atomic_write(&generated_path, generated.as_bytes(), 0o700)?;
+        let namespace = namespace_info();
+        let (route, output) = execute_generated(&generated_path, &namespace)?;
+        let code = output.status.code().unwrap_or(1);
+        write_named_operation_log("aidl-reset", route, code, &generated_path, &output)?;
+        if code == 0 {
+            let _ = fs::remove_file(aidl_metadata_path());
+            let _ = fs::remove_file(aidl_candidate_path());
+            let _ = fs::remove_file(aidl_original_path());
+            reset_policy_settings()?;
+        }
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        return Ok(code);
+    }
+
+    let snapshot = audio_policy_snapshot()?;
+    let source = discover_aidl_primary_config(&snapshot)?;
+    if path_is_mounted(&source.path) && !aidl_metadata_path().is_file() {
+        return Err(format!(
+            "{} is already mounted by another source; refusing to stack an AIDL writer",
+            source.path.display()
+        ));
+    }
+    let plan = aidl::plan_policy(
+        &snapshot,
+        &settings.policy,
+        settings.sample_rate,
+        &settings.bit_depth,
+    )?;
+    let candidate = aidl::apply_plan_to_module_xml(&source.xml, &source.model.name, &plan)?;
+    let candidate_model = aidl::parse_module_xml(&candidate)?;
+    let runtime = snapshot
+        .modules
+        .iter()
+        .find(|module| module.name == "primary" || module.name == "default")
+        .ok_or_else(|| "runtime primary/default module was not found".to_string())?;
+    let (matched, total) = aidl::topology_match_score(runtime, &candidate_model);
+    if total == 0
+        || matched != total
+        || !aidl::structural_diff(&source.model, &candidate_model).is_empty()
+    {
+        return Err(format!(
+            "candidate failed final topology validation: {matched}/{total}"
+        ));
+    }
+    atomic_write(&aidl_original_path(), source.xml.as_bytes(), 0o600)?;
+    atomic_write(&aidl_candidate_path(), candidate.as_bytes(), 0o644)?;
+    set_vendor_config_context(&aidl_candidate_path())?;
+    atomic_write(
+        &aidl_metadata_path(),
+        format!("version=1\ntarget={}\n", source.path.display()).as_bytes(),
+        0o600,
+    )?;
+
+    let generated_path = state_root().join("generated/aidl-apply.sh");
+    let generated = render_aidl_reload_script(&source.path, Some(&aidl_candidate_path()));
+    atomic_write(&generated_path, generated.as_bytes(), 0o700)?;
+    let namespace = namespace_info();
+    let (route, output) = execute_generated(&generated_path, &namespace)?;
+    let mut code = output.status.code().unwrap_or(1);
+    if code == 0 {
+        match audio_policy_snapshot().and_then(|loaded| {
+            validate_loaded_aidl_plan(&loaded, &plan)?;
+            Ok(loaded)
+        }) {
+            Ok(_) => save_policy_settings(&settings)?,
+            Err(error) => {
+                code = 34;
+                let _ = Command::new("umount").arg(&source.path).status();
+                let _ = Command::new("setprop")
+                    .args(["ctl.restart", "vendor.audio-hal-aidl"])
+                    .status();
+                let _ = fs::remove_file(aidl_metadata_path());
+                let _ = fs::remove_file(aidl_candidate_path());
+                eprintln!("AIDL post-restart validation failed and was rolled back: {error}");
+            }
+        }
+    }
+    if code != 0 {
+        let _ = fs::remove_file(aidl_metadata_path());
+        let _ = fs::remove_file(aidl_candidate_path());
+    }
+    write_named_operation_log("aidl-apply", route, code, &generated_path, &output)?;
+    println!("controller_action=aidl-apply");
+    println!("controller_route={route}");
+    println!("aidl_target={}", source.path.display());
+    println!("aidl_topology={matched}/{total}");
+    println!(
+        "aidl_mount_active={}",
+        bool_number(path_is_mounted(&source.path))
+    );
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    Ok(code)
+}
+
+fn run_aidl_restore() -> Result<i32, String> {
+    if !aidl_metadata_path().is_file() || !aidl_candidate_path().is_file() {
+        println!("aidl_restore=not-configured");
+        return Ok(0);
+    }
+    let target = read_aidl_target()?;
+    if path_is_mounted(&target) {
+        println!("aidl_restore=already-mounted");
+        return Ok(0);
+    }
+    let current = fs::read(&target).map_err(|error| {
+        format!(
+            "cannot read current AIDL source {}: {error}",
+            target.display()
+        )
+    })?;
+    let original = fs::read(aidl_original_path())
+        .map_err(|error| format!("cannot read saved AIDL source: {error}"))?;
+    if current != original {
+        return Err("AIDL source changed after configuration; refusing boot restore until it is revalidated".to_string());
+    }
+    set_vendor_config_context(&aidl_candidate_path())?;
+    let generated_path = state_root().join("generated/aidl-restore.sh");
+    let generated = render_aidl_reload_script(&target, Some(&aidl_candidate_path()));
+    atomic_write(&generated_path, generated.as_bytes(), 0o700)?;
+    let namespace = namespace_info();
+    let (route, output) = execute_generated(&generated_path, &namespace)?;
+    let code = output.status.code().unwrap_or(1);
+    write_named_operation_log("aidl-restore", route, code, &generated_path, &output)?;
+    println!(
+        "aidl_restore={}",
+        if code == 0 { "applied" } else { "failed" }
+    );
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    Ok(code)
+}
+
+fn print_audio_backend_status() {
+    match audio_policy_snapshot() {
+        Ok(snapshot) if snapshot.is_aidl() => {
+            println!("audio_backend=aidl");
+            println!("audio_config_source={}", snapshot.config_source);
+            println!("aidl_module_count={}", snapshot.modules.len());
+            println!(
+                "aidl_usb_output_device_count={}",
+                snapshot.usb_output_devices().len()
+            );
+            println!(
+                "aidl_usb_reachable_mix_port_count={}",
+                snapshot.usb_reachable_mix_ports().len()
+            );
+            let ports = snapshot.usb_reachable_mix_ports();
+            let behaviors = ports
+                .iter()
+                .map(|(_, port)| port.behavior())
+                .collect::<BTreeSet<_>>();
+            println!(
+                "aidl_usb_port_behaviors={}",
+                behaviors.into_iter().collect::<Vec<_>>().join(",")
+            );
+            println!(
+                "aidl_usb_port_summary={}",
+                ports
+                    .iter()
+                    .map(|(module, port)| format!("{module}:{}:{}", port.name, port.behavior()))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            for (policy, _, _) in POLICIES.iter().filter(|(policy, _, _)| *policy != "legacy") {
+                let rates = DOCUMENTED_RATES
+                    .iter()
+                    .map(|(rate, _)| *rate)
+                    .filter(|rate| aidl::plan_policy(&snapshot, policy, *rate, "32").is_ok())
+                    .map(|rate| rate.to_string())
+                    .collect::<Vec<_>>();
+                println!(
+                    "aidl_supported_rates_{}={}",
+                    policy.replace('-', "_"),
+                    rates.join(",")
+                );
+            }
+            match discover_aidl_primary_config(&snapshot) {
+                Ok(source) => {
+                    println!("aidl_config_adapter=module-xml");
+                    println!("aidl_config_path={}", source.path.display());
+                    println!("aidl_config_topology={}/{}", source.matches, source.total);
+                    println!("aidl_preview_supported=1");
+                    println!("aidl_apply_supported=1");
+                    println!(
+                        "aidl_mount_active={}",
+                        bool_number(path_is_mounted(&source.path))
+                    );
+                }
+                Err(error) => {
+                    println!("aidl_config_adapter=read-only");
+                    println!("aidl_preview_supported=0");
+                    println!("aidl_apply_supported=0");
+                    println!("aidl_config_error={}", error.replace('\n', " "));
+                }
+            }
+        }
+        Ok(snapshot) => {
+            println!("audio_backend=traditional");
+            println!("audio_config_source={}", snapshot.config_source);
+        }
+        Err(error) => {
+            println!("audio_backend=unknown");
+            println!("audio_backend_error={}", error.replace('\n', " "));
+        }
+    }
+}
+
+fn print_aidl_inspect() -> Result<(), String> {
+    let snapshot = audio_policy_snapshot()?;
+    print_aidl_snapshot(&snapshot)
+}
+
+fn print_aidl_snapshot(snapshot: &aidl::AudioPolicySnapshot) -> Result<(), String> {
+    if !snapshot.is_aidl() {
+        return Err(format!(
+            "active audio policy is not AIDL: {}",
+            snapshot.config_source
+        ));
+    }
+    println!("config_source={}", snapshot.config_source);
+    for module in &snapshot.modules {
+        println!("module={}", module.name);
+        for port in &module.output_mix_ports {
+            let rates = port.unique_rates();
+            let dynamic = port.profiles.iter().any(|profile| {
+                profile.dynamic_rate || profile.dynamic_format || profile.dynamic_channels
+            });
+            println!(
+                "mix_port={}|{}|{}|{}|{}",
+                module.name,
+                port.name,
+                port.behavior(),
+                if dynamic { "dynamic" } else { "static" },
+                rates
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+        }
+        for port in &module.device_ports {
+            println!(
+                "device_port={}|{}|{}",
+                module.name,
+                port.name,
+                port.device_type.as_deref().unwrap_or("")
+            );
+        }
+        for route in &module.routes {
+            println!(
+                "route={}|{}|{}",
+                module.name,
+                route.sink,
+                route.sources.join(",")
+            );
+        }
+    }
+    for (module, port) in snapshot.usb_reachable_mix_ports() {
+        println!(
+            "usb_reachable_mix_port={module}|{}|{}",
+            port.name,
+            port.behavior()
+        );
+    }
+    Ok(())
 }
 
 fn print_stored_settings(settings: &StoredSettings) {
@@ -1959,6 +2732,18 @@ mod tests {
         assert_eq!(settings.resampler_half_length, 520);
         assert_eq!(settings.resampler_percent, 98);
         assert_eq!(settings.policy, policy);
+
+        let preset = ["resampler", "ultra-hifi"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(update_stored_settings_for_extra(&mut settings, &preset));
+        assert_eq!(settings.resampler_preset, "ultra-hifi");
+        assert_eq!(settings.resampler_bypass, "none");
+        assert!(settings.resampler_cheat);
+        assert_eq!(settings.resampler_stop_band, 194);
+        assert_eq!(settings.resampler_half_length, 520);
+        assert_eq!(settings.resampler_percent, 98);
 
         let usb = ["usb-period", "1000"]
             .into_iter()
