@@ -260,7 +260,6 @@ type Status = {
   aidl_config_path?: string;
   aidl_config_topology?: string;
   aidl_config_error?: string;
-  aidl_preview_supported?: string;
   aidl_apply_supported?: string;
   [key: `aidl_supported_rates_${string}`]: string | undefined;
   [key: `jitter_${string}`]: string | string[] | undefined;
@@ -778,33 +777,6 @@ function App() {
     }
   }
 
-  async function previewAidl() {
-    const current = settings();
-    const numericRate = Number(rateValue(current));
-    if (!Number.isInteger(numericRate) || numericRate < 44100 || numericRate > 768000) {
-      showToast(tx("采样率必须是 44100–768000 Hz 的整数"), "error");
-      return;
-    }
-    setBusy(true);
-    try {
-      const command = `${CONTROLLER} aidl-preview ${[
-        current.policy,
-        String(numericRate),
-        current.bitDepth
-      ].map(shellQuote).join(" ")}`;
-      const result = await rootExec(command);
-      const text = `${result.stdout}${result.stderr ? `\n[stderr]\n${result.stderr}` : ""}`.trim();
-      setLog(text || `exit=${result.code}`);
-      if (result.code !== 0) throw new Error(text || `AIDL 预览失败，退出码 ${result.code}`);
-      openOverlay("log");
-      showToast(tx("AIDL 候选配置预览已生成"), "success");
-    } catch (error) {
-      showToast(String(error), "error");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   function changePolicy(value: string) {
     if (!isAidl()) {
       update("policy", value);
@@ -1135,11 +1107,13 @@ function App() {
             <section class="page-panel" data-page="policy" aria-label={tx("音频策略页面")}>
               <main class="page-content">
                 <section class="card preview-card">
-                  <div class="section-heading"><h2>{tx("本次执行")}</h2></div>
+                  <div class="section-heading">
+                    <h2>{tx("本次执行")}</h2>
+                    <Show when={isAidl()}><span class="aidl-tip" title={tx("当前为 AIDL Audio HAL。应用前会自动校验候选配置；失败时自动恢复原始配置。")}>{status().aidl_core_version ? `AIDL v${status().aidl_core_version}` : "AIDL"} · ⓘ</span></Show>
+                  </div>
                   <div class="summary-line"><span class="summary-key">{tx("策略")}</span><strong>{tx(policyLabel(settings().policy, policyOptions.find(([value]) => value === settings().policy)?.[1] ?? ""))}</strong><span class="summary-key">{tx("格式")}</span><strong>{tx(displayRate(rateValue(settings())))} · {tx(bitOptions.find(([value]) => value === settings().bitDepth)?.[1] ?? "")}</strong></div>
                   <div class="tag-row"><Show when={settings().drc}><span class="tag">DRC</span></Show><Show when={settings().forceUsbv2}><span class="tag">USBv2</span></Show><Show when={settings().forceBluetoothQti}><span class="tag">Bluetooth QTI</span></Show></div>
-                  <Show when={isAidl()}><div class="notice"><WarningIcon /><span>{tx("当前为 AIDL Audio HAL。你可以先生成只读预览；点击应用后会挂载已校验的候选配置并重启音频服务，失败时自动恢复原始配置。")}</span></div></Show>
-                  <div class={`preview-actions ${isAidl() ? "aidl" : ""}`}><button class="secondary-button" onClick={() => openConfirm({ title: "重置音频策略", message: isAidl() ? "将卸载 AIDL module XML，并重启 Audio HAL 与 audioserver 恢复原始配置。当前音频会短暂中断。" : "将卸载生成的 audio policy bind mount，并重启音频服务。当前音频连接可能会短暂中断。", confirmLabel: "确认重置", action: () => void reset() })} disabled={busy()}>{tx("重置")}</button><Show when={isAidl()}><button class="secondary-button" onClick={() => void previewAidl()} disabled={busy() || status().aidl_preview_supported !== "1"}>{tx("生成只读预览")}</button></Show><button class="primary-button" onClick={() => void apply()} disabled={busy() || (isAidl() && status().aidl_apply_supported !== "1")}>{busy() ? tx("处理中…") : tx("应用")}</button></div>
+                  <div class="preview-actions"><button class="secondary-button" onClick={() => openConfirm({ title: "重置音频策略", message: isAidl() ? "将卸载 AIDL module XML，并重启 Audio HAL 与 audioserver 恢复原始配置。当前音频会短暂中断。" : "将卸载生成的 audio policy bind mount，并重启音频服务。当前音频连接可能会短暂中断。", confirmLabel: "确认重置", action: () => void reset() })} disabled={busy()}>{tx("重置")}</button><button class="primary-button" onClick={() => void apply()} disabled={busy() || (isAidl() && status().aidl_apply_supported !== "1")}>{busy() ? tx("处理中…") : tx("应用")}</button></div>
                 </section>
 
                 <section class="grid two-col">
@@ -1168,19 +1142,19 @@ function App() {
                   </div>
                 </section>
 
-                <Show when={isAidl()}><section class="card section-card aidl-card">
-                  <SectionHeading title={tx("AIDL Audio HAL 适配状态")} />
-                  <div class="about-details">
-                    <div><span>{tx("接口版本")}</span><strong>{status().aidl_core_version ? `AIDL v${status().aidl_core_version}` : status().aidl_core_versions || "AIDL"}</strong></div>
-                    <div><span>{tx("配置适配器")}</span><strong>{status().aidl_config_adapter || "read-only"}</strong></div>
-                    <div><span>{tx("配置来源")}</span><strong>{status().aidl_config_path || status().audio_config_source || "—"}</strong></div>
-                    <div><span>{tx("拓扑匹配")}</span><strong>{status().aidl_config_topology || "—"}</strong></div>
-                    <div><span>{tx("USB 可达端口")}</span><strong>{status().aidl_usb_reachable_mix_port_count || "0"}</strong></div>
+                <Show when={isAidl()}><details class="card aidl-card">
+                  <summary class="aidl-summary">
+                    <strong>{status().aidl_core_version ? `AIDL v${status().aidl_core_version}` : status().aidl_core_versions || "AIDL"}</strong>
+                    <span>{status().aidl_config_adapter || "read-only"}</span>
+                    <span>{status().aidl_config_topology || "—"}</span>
+                    <span>USB {status().aidl_usb_reachable_mix_port_count || "0"}</span>
+                  </summary>
+                  <div class="aidl-detail-content">
+                    <div class="aidl-detail-row"><span>{tx("配置来源")}</span><strong>{status().aidl_config_path || status().audio_config_source || "—"}</strong></div>
+                    <div class="aidl-detail-row"><span>{tx("端口行为")}</span><strong class="aidl-port-behaviors">{status().aidl_usb_port_behaviors || "—"}</strong></div>
+                    <Show when={status().aidl_config_error}><p class="field-help">{status().aidl_config_error}</p></Show>
                   </div>
-                  <p class="field-help">{tx("端口按 flags、动态 profile 和 USB 路由可达性分类，不依赖 hifi_playback 等厂商名字。")}</p>
-                  <p class="aidl-behaviors">{status().aidl_usb_port_behaviors || "—"}</p>
-                  <Show when={status().aidl_config_error}><p class="field-help">{status().aidl_config_error}</p></Show>
-                </section></Show>
+                </details></Show>
 
                 <section class="status-strip card">
                   <div><span class="label">audioserver</span><strong>{status().audioserver_pid || tx("未检测到")}</strong></div>
