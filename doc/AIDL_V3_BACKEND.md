@@ -47,11 +47,12 @@ usbsrctl aidl-plan-stdin XML POLICY RATE DEPTH [OUT]
 The stdin variants make the parser testable on the host with a captured
 `dumpsys media.audio_policy` without modifying a device.
 
-`aidl-preview` discovers a unique primary module configuration by comparing
-candidate files from ODM, vendor, product, system_ext and system against the
-live topology. It emits only a validated plan and never writes or mounts a
-candidate. The WebUI uses this command on AIDL devices and disables the
-traditional apply/reset path.
+`aidl-preview` remains a controller-only diagnostic command. It discovers a
+unique primary module configuration by comparing candidate files from ODM,
+vendor, product, system_ext and system against the live topology, then emits a
+validated plan without writing or mounting it. The WebUI reads the same AIDL
+status model and sends Apply/Reset through the validated AIDL writer; the
+traditional XML/HIDL path remains unchanged on non-AIDL devices.
 
 ## Runtime model
 

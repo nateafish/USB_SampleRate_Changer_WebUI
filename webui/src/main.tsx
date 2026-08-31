@@ -1109,7 +1109,7 @@ function App() {
                 <section class="card preview-card">
                   <div class="section-heading">
                     <h2>{tx("本次执行")}</h2>
-                    <Show when={isAidl()}><span class="aidl-tip" title={tx("当前为 AIDL Audio HAL。应用前会自动校验候选配置；失败时自动恢复原始配置。")}>{status().aidl_core_version ? `AIDL v${status().aidl_core_version}` : "AIDL"} · ⓘ</span></Show>
+                    <Show when={isAidl()}><span class="aidl-tip">{status().aidl_core_version ? `AIDL v${status().aidl_core_version}` : "AIDL"}</span></Show>
                   </div>
                   <div class="summary-line"><span class="summary-key">{tx("策略")}</span><strong>{tx(policyLabel(settings().policy, policyOptions.find(([value]) => value === settings().policy)?.[1] ?? ""))}</strong><span class="summary-key">{tx("格式")}</span><strong>{tx(displayRate(rateValue(settings())))} · {tx(bitOptions.find(([value]) => value === settings().bitDepth)?.[1] ?? "")}</strong></div>
                   <div class="tag-row"><Show when={settings().drc}><span class="tag">DRC</span></Show><Show when={settings().forceUsbv2}><span class="tag">USBv2</span></Show><Show when={settings().forceBluetoothQti}><span class="tag">Bluetooth QTI</span></Show></div>
