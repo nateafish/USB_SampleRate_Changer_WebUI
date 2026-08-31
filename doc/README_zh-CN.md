@@ -21,8 +21,6 @@ English reference：[README.md](../README.md)
 
 构建出的模块会将上游脚本、模板和 Extras 全部放在模块根目录的 `core/` 中；根目录仅保留模块元数据、安装脚本、控制器和 WebUI 文件。Magisk/KernelSU 要求的 `customize.sh` 与 `uninstall.sh` 仍位于模块根目录。
 
-模块通过 `module.prop` 中的 `updateJson` 字段接入 APatch Manager 的原生更新功能。APatch 会读取已发布的 `update.json`，比较 `versionCode`，下载 Release 中的模块 ZIP，并交由自身的模块安装器完成更新。Release Workflow 会同时发布可安装 ZIP 和 `update.json`。
-
 ## 参数对应关系
 
 | WebUI 控件 | `USB_SampleRate_Changer` 参数 |
@@ -50,11 +48,12 @@ English reference：[README.md](../README.md)
 
 ```text
 SolidJS WebUI
-  -> window.ksu.exec(usbsrctl apply ... | usbsrctl extra ...)
-  -> Rust 校验固定的参数模式
-  -> /data/adb/usb_samplerate_changer_webui/generated/*.sh
-  -> 必要时切换到 audioserver 的 mount namespace
+  -> APatch/KernelSU root bridge（优先 spawn，exec 作为回退）
+  -> usbsrctl 校验版本化命令目录
+  -> 在内存中生成已校验的 shell 程序
+  -> 直接送入 shell，并在需要时进入 audioserver 的 mount namespace
   -> 执行模块 `core/` 中选定的上游脚本
+  -> 将命令摘要记录到 /data/local/tmp/usb_samplerate_changer_webui/last-command.log
 ```
 
 ## 构建

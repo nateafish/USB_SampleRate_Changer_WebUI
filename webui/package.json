@@ -1,20 +1,24 @@
 {
   "name": "usb-samplerate-changer-webui",
   "private": true,
-  "version": "1.0.6",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "embla-carousel": "^8.6.0",
     "solid-js": "^1.9.14"
   },
   "devDependencies": {
+    "jsdom": "^30.0.1",
     "typescript": "^6.0.3",
     "vite": "^8.1.5",
-    "vite-plugin-solid": "^2.11.14"
+    "vite-plugin-solid": "^2.11.14",
+    "vitest": "^4.1.11"
   }
 }

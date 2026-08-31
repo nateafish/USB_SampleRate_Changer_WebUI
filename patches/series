@@ -2,3 +2,6 @@
 0001-prefer-qti-bluetooth-offload-on-supported-qualcomm.patch
 0002-report-alsa-endpoint-state-and-role.patch
 0003-wait-for-audioserver-restart.patch
+# Controller-owned audio restart: disable upstream restart hooks and add the
+# single canonical restart entry point used by the Backend.
+0004-controller-owns-audio-restart.patch

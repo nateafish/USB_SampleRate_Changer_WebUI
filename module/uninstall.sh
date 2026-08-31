@@ -2,6 +2,7 @@
 
 MODDIR="${0%/*}"
 STATE_ROOT="/data/adb/usb_samplerate_changer_webui"
+LOG_ROOT="/data/local/tmp/usb_samplerate_changer_webui"
 reset_failed=0
 
 run_reset() {
@@ -23,7 +24,8 @@ if [ -x "$MODDIR/usbsrctl" ]; then
     run_reset reset
 fi
 
-rm -rf "$STATE_ROOT"
+rm -rf "/data/adb/usb_samplerate_changer_webui"
+rm -rf "/data/local/tmp/usb_samplerate_changer_webui"
 
 if [ "$reset_failed" -ne 0 ]; then
     echo "USB SampleRate Changer: some audio settings could not be reset during uninstall" 1>&2

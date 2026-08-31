@@ -28,7 +28,7 @@ export default function SelectField(props: {
   let optionList: HTMLDivElement | undefined;
   let ownsHistoryEntry = false;
   let closeTimer: number | undefined;
-  const englishDialog = () => props.language === "en" || (!props.language && !/[\u4e00-\u9fff]/.test(props.title));
+  const closeLabel = () => props.language === "en" ? `Close ${props.title} selector` : props.title;
 
   function openDialog() {
     if (open()) return;
@@ -112,7 +112,7 @@ export default function SelectField(props: {
       <Show when={open()}>
         <Portal>
           <div class="select-dialog-layer" classList={{ closing: closing() }} data-no-page-drag role="presentation">
-            <button class="select-dialog-backdrop" aria-label={englishDialog() ? `Close ${props.title} selector` : `关闭${props.title}选择`} onClick={() => closeDialog()} />
+            <button class="select-dialog-backdrop" aria-label={closeLabel()} onClick={() => closeDialog()} />
             <section
               class="select-dialog"
               role="dialog"
@@ -122,7 +122,7 @@ export default function SelectField(props: {
                 if (closing() && event.target === event.currentTarget) finishClose();
               }}
             >
-              <header><h2>{props.title}</h2><button type="button" class="dialog-close" aria-label={englishDialog() ? `Close ${props.title} selector` : `关闭${props.title}选择`} onClick={() => closeDialog()}>×</button></header>
+              <header><h2>{props.title}</h2><button type="button" class="dialog-close" aria-label={closeLabel()} onClick={() => closeDialog()}>×</button></header>
               <div class="select-option-list" role="listbox" aria-label={props.title} ref={optionList}>
                 <Show when={props.groups} fallback={<For each={props.options}>{(option) => renderOption(option)}</For>}>
                   <For each={props.groups}>{(group) => <section class="select-option-group"><h3>{group.label}</h3><For each={group.options}>{(option) => renderOption(option)}</For></section>}</For>
