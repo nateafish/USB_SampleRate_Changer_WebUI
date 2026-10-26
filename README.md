@@ -4,7 +4,7 @@
 
 This project is a WebUI manager for [USB_SampleRate_Changer](https://github.com/yzyhk904/USB_SampleRate_Changer). The module uses a bundled Rust backend to execute the `USB_SampleRate_Changer` scripts.
 
-> Version 1.0.6 experimentally adds an Audio Core AIDL v2/v3 backend. The original traditional XML/HIDL path and upstream submodule remain intact. Persistent AIDL application is enabled only when a vendor module-XML source matches the complete live topology.
+> Version 1.1.1 experimentally adds an Audio Core AIDL v2/v3 backend. The original traditional XML/HIDL path and upstream submodule remain intact. Persistent AIDL application is enabled only when a vendor module-XML source matches the complete live topology.
 
 ## Repository layout
 

@@ -407,11 +407,12 @@ pub fn parse_module_xml(xml: &str) -> Result<AudioModule, String> {
                             .or_else(|| xml_attr(trimmed, "encoding"))
                             .or_else(|| xml_attr(trimmed, "format")),
                         rates,
-                        dynamic_rate: !trimmed.contains("samplingRates="),
-                        dynamic_format: !trimmed.contains("formatType=")
-                            && !trimmed.contains("format="),
-                        dynamic_channels: !trimmed.contains("channelLayouts=")
-                            && !trimmed.contains("channelMasks="),
+                        dynamic_rate: xml_attr(trimmed, "samplingRates").is_none(),
+                        dynamic_format: xml_attr(trimmed, "formatType").is_none()
+                            && xml_attr(trimmed, "format").is_none()
+                            && xml_attr(trimmed, "encoding").is_none(),
+                        dynamic_channels: xml_attr(trimmed, "channelLayouts").is_none()
+                            && xml_attr(trimmed, "channelMasks").is_none(),
                     });
                 }
             }
@@ -455,9 +456,11 @@ pub fn parse_audio_core_aidl_versions(xml: &str) -> Vec<u32> {
         let close_start = open_end + 1 + close_delta;
         let open = &xml[start + 1..open_end];
         let body = &xml[open_end + 1..close_start];
-        if xml_attr(open, "format").as_deref() == Some("aidl")
-            && xml_element_text(body, "name") == Some("android.hardware.audio.core")
-        {
+        let is_aidl = xml_attr(open, "format").is_some_and(|format| format == "aidl");
+        let hal_name = xml_element_text(body, "name")
+            .map(str::to_owned)
+            .or_else(|| xml_attr(open, "name"));
+        if is_aidl && hal_name.as_deref() == Some("android.hardware.audio.core") {
             if let Some(version) = xml_element_text(body, "version") {
                 versions.extend(
                     version
@@ -502,14 +505,17 @@ pub fn topology_match_score(runtime: &AudioModule, config: &AudioModule) -> (usi
                 .any(|config_port| config_port.name == runtime_port.name)
         })
         .count();
+    // AudioPolicy preserves XML tag names in its declared-device topology.
+    // Verify that identity as well as the AIDL-to-framework type conversion;
+    // a generic OUT_DEVICE must not consume another route's endpoint.
     let device_matches = runtime
         .device_ports
         .iter()
         .filter(|runtime_port| {
-            config
-                .device_ports
-                .iter()
-                .any(|config_port| config_port.name == runtime_port.name)
+            config.device_ports.iter().any(|config_port| {
+                config_port.name == runtime_port.name
+                    && device_semantics_compatible(runtime_port, config_port)
+            })
         })
         .count();
     let route_matches = runtime
@@ -633,18 +639,20 @@ fn set_xml_attr(tag: &str, key: &str, value: &str) -> Result<String, String> {
     if value.contains(['"', '\'', '<', '>', '&']) {
         return Err(format!("unsafe XML attribute value for {key}"));
     }
-    let pattern = format!("{key}=\"");
-    if let Some(start) = tag.find(&pattern) {
-        let value_start = start + pattern.len();
-        let value_end = tag[value_start..]
-            .find('"')
-            .map(|end| value_start + end)
-            .ok_or_else(|| format!("unterminated {key} attribute"))?;
-        let mut output = String::with_capacity(tag.len() + value.len());
-        output.push_str(&tag[..value_start]);
-        output.push_str(value);
-        output.push_str(&tag[value_end..]);
-        return Ok(output);
+    for quote in ['"', '\''] {
+        let pattern = format!("{key}={quote}");
+        if let Some(start) = tag.find(&pattern) {
+            let value_start = start + pattern.len();
+            let value_end = tag[value_start..]
+                .find(quote)
+                .map(|end| value_start + end)
+                .ok_or_else(|| format!("unterminated {key} attribute"))?;
+            let mut output = String::with_capacity(tag.len() + value.len());
+            output.push_str(&tag[..value_start]);
+            output.push_str(value);
+            output.push_str(&tag[value_end..]);
+            return Ok(output);
+        }
     }
     let insert = tag
         .rfind("/>")
@@ -885,6 +893,107 @@ fn module_names_equivalent(left: &str, right: &str) -> bool {
             (left, right),
             ("primary", "default") | ("default", "primary")
         )
+}
+
+fn device_semantics_compatible(runtime: &AudioPort, config: &AudioPort) -> bool {
+    let type_compatible = match (
+        runtime.device_type.as_deref(),
+        config.device_type.as_deref(),
+    ) {
+        (Some(left), Some(right)) => {
+            device_direction(left) == device_direction(right)
+                && framework_device_type(runtime) == framework_device_type(config)
+        }
+        _ => true,
+    };
+    let connection_compatible = match (device_connection(runtime), device_connection(config)) {
+        (Some(left), Some(right)) => left == right,
+        _ => true,
+    };
+    type_compatible && connection_compatible
+}
+
+fn normalize_device_type(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches("AUDIO_DEVICE_")
+        .to_ascii_uppercase()
+}
+
+fn device_direction(value: &str) -> Option<bool> {
+    let value = normalize_device_type(value);
+    if value.starts_with("OUT_") {
+        Some(true)
+    } else if value.starts_with("IN_") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn framework_device_type(port: &AudioPort) -> Option<String> {
+    let kind = normalize_device_type(port.device_type.as_deref()?);
+    let connection = device_connection(port);
+    // AIDL AudioDeviceDescription splits the legacy device enum into a type
+    // and a connection. These are value conversions, independent of port names.
+    let mapped = match (kind.as_str(), connection.as_deref()) {
+        ("OUT_SPEAKER_EARPIECE", _) => "OUT_EARPIECE",
+        ("IN_MICROPHONE", _) => "IN_BUILTIN_MIC",
+        ("IN_MICROPHONE_BACK", _) => "IN_BACK_MIC",
+        ("OUT_AFE_PROXY", _) => "OUT_PROXY",
+        ("IN_AFE_PROXY", _) => "IN_PROXY",
+        ("OUT_DEVICE", Some("usb")) => "OUT_USB_DEVICE",
+        ("OUT_HEADSET", Some("usb")) => "OUT_USB_HEADSET",
+        ("OUT_ACCESSORY", Some("usb")) => "OUT_USB_ACCESSORY",
+        ("IN_DEVICE", Some("usb")) => "IN_USB_DEVICE",
+        ("IN_HEADSET", Some("usb")) => "IN_USB_HEADSET",
+        ("OUT_DEVICE", Some("bt-sco")) => "OUT_BLUETOOTH_SCO",
+        ("OUT_HEADSET", Some("bt-sco")) => "OUT_BLUETOOTH_SCO_HEADSET",
+        ("OUT_CARKIT", Some("bt-sco")) => "OUT_BLUETOOTH_SCO_CARKIT",
+        ("IN_HEADSET", Some("bt-sco")) => "IN_BLUETOOTH_SCO_HEADSET",
+        ("OUT_DEVICE", Some("bt-a2dp")) => "OUT_BLUETOOTH_A2DP",
+        ("OUT_HEADPHONE", Some("bt-a2dp")) => "OUT_BLUETOOTH_A2DP_HEADPHONES",
+        ("OUT_SPEAKER", Some("bt-a2dp")) => "OUT_BLUETOOTH_A2DP_SPEAKER",
+        ("IN_DEVICE", Some("bt-a2dp")) => "IN_BLUETOOTH_A2DP",
+        ("OUT_HEADSET", Some("bt-le")) => "OUT_BLE_HEADSET",
+        ("OUT_SPEAKER", Some("bt-le")) => "OUT_BLE_SPEAKER",
+        ("OUT_BROADCAST", Some("bt-le")) => "OUT_BLE_BROADCAST",
+        ("IN_HEADSET", Some("bt-le")) => "IN_BLE_HEADSET",
+        ("OUT_HEADSET", Some("analog")) => "OUT_WIRED_HEADSET",
+        ("OUT_HEADPHONE", Some("analog")) => "OUT_WIRED_HEADPHONE",
+        ("IN_HEADSET", Some("analog")) => "IN_WIRED_HEADSET",
+        ("OUT_DEVICE", Some("hdmi")) => "OUT_HDMI",
+        ("OUT_DEVICE", Some("ip-v4")) => "OUT_IP",
+        ("IN_DEVICE", Some("ip-v4")) => "IN_IP",
+        ("OUT_DEVICE", Some("multiroute")) => "OUT_MULTIROUTE",
+        _ => return Some(kind),
+    };
+    Some(mapped.to_string())
+}
+
+fn device_connection(port: &AudioPort) -> Option<String> {
+    if let Some(connection) = port.connection.as_deref() {
+        let connection = connection.trim();
+        if !connection.is_empty() {
+            return Some(connection.to_ascii_lowercase());
+        }
+    }
+
+    // The dumpsys device line exposes the concrete USB/Bluetooth type but not
+    // the XML connection attribute.  Infer only the stable families so an
+    // explicit XML connection can still reject an incompatible endpoint.
+    let value = normalize_device_type(port.device_type.as_deref()?);
+    if value.contains("_USB_") {
+        Some("usb".to_string())
+    } else if value.contains("_BLUETOOTH_SCO") {
+        Some("bt-sco".to_string())
+    } else if value.contains("_BLUETOOTH_A2DP") {
+        Some("bt-a2dp".to_string())
+    } else if value.contains("_BLE_") {
+        Some("bt-le".to_string())
+    } else {
+        None
+    }
 }
 
 fn string_sets_equal(left: &[String], right: &[String]) -> bool {
@@ -1181,6 +1290,121 @@ mod tests {
         assert_eq!(topology_match_score(&runtime, &config), (3, 4));
         runtime.name = "usb".to_string();
         assert_eq!(topology_match_score(&runtime, &config), (0, 4));
+    }
+
+    #[test]
+    fn topology_device_match_requires_identity_direction_and_connection() {
+        let runtime = AudioModule {
+            name: "primary".to_string(),
+            device_ports: vec![AudioPort {
+                name: "external_converter".to_string(),
+                device_type: Some("AUDIO_DEVICE_OUT_USB_DEVICE".to_string()),
+                ..AudioPort::default()
+            }],
+            ..AudioModule::default()
+        };
+        let config = AudioModule {
+            name: "default".to_string(),
+            device_ports: vec![AudioPort {
+                name: "external_converter".to_string(),
+                device_type: Some("OUT_DEVICE".to_string()),
+                connection: Some("usb".to_string()),
+                ..AudioPort::default()
+            }],
+            ..AudioModule::default()
+        };
+        assert_eq!(topology_match_score(&runtime, &config), (1, 1));
+
+        let mut wrong_name = config.clone();
+        wrong_name.device_ports[0].name = "other_converter".to_string();
+        assert_eq!(topology_match_score(&runtime, &wrong_name), (0, 1));
+
+        let mut wrong_direction = config.clone();
+        wrong_direction.device_ports[0].device_type = Some("IN_DEVICE".to_string());
+        assert_eq!(topology_match_score(&runtime, &wrong_direction), (0, 1));
+
+        let mut wrong_connection = config;
+        wrong_connection.device_ports[0].connection = Some("bluetooth".to_string());
+        assert_eq!(topology_match_score(&runtime, &wrong_connection), (0, 1));
+    }
+
+    #[test]
+    fn generic_device_matching_is_one_to_one() {
+        let runtime = AudioModule {
+            name: "primary".to_string(),
+            device_ports: vec![
+                AudioPort {
+                    name: "vendor_usb".to_string(),
+                    device_type: Some("AUDIO_DEVICE_OUT_USB_DEVICE".to_string()),
+                    ..AudioPort::default()
+                },
+                AudioPort {
+                    name: "runtime_usb_2".to_string(),
+                    device_type: Some("AUDIO_DEVICE_OUT_USB_HEADSET".to_string()),
+                    ..AudioPort::default()
+                },
+            ],
+            ..AudioModule::default()
+        };
+        let config = AudioModule {
+            name: "default".to_string(),
+            device_ports: vec![AudioPort {
+                name: "vendor_usb".to_string(),
+                device_type: Some("OUT_DEVICE".to_string()),
+                connection: Some("usb".to_string()),
+                ..AudioPort::default()
+            }],
+            ..AudioModule::default()
+        };
+        assert_eq!(topology_match_score(&runtime, &config), (1, 2));
+    }
+
+    #[test]
+    fn translates_aidl_device_descriptions_without_vendor_port_names() {
+        for (aidl_type, connection, framework_type) in [
+            ("OUT_SPEAKER_EARPIECE", "", "OUT_EARPIECE"),
+            ("IN_MICROPHONE", "", "IN_BUILTIN_MIC"),
+            ("IN_MICROPHONE_BACK", "", "IN_BACK_MIC"),
+            ("OUT_AFE_PROXY", "virtual", "OUT_PROXY"),
+            ("IN_AFE_PROXY", "virtual", "IN_PROXY"),
+            ("OUT_DEVICE", "usb", "OUT_USB_DEVICE"),
+            ("OUT_HEADSET", "usb", "OUT_USB_HEADSET"),
+            ("IN_HEADSET", "usb", "IN_USB_HEADSET"),
+            ("OUT_HEADSET", "bt-sco", "OUT_BLUETOOTH_SCO_HEADSET"),
+            ("OUT_CARKIT", "bt-sco", "OUT_BLUETOOTH_SCO_CARKIT"),
+            ("IN_HEADSET", "bt-sco", "IN_BLUETOOTH_SCO_HEADSET"),
+            ("OUT_SPEAKER", "bt-a2dp", "OUT_BLUETOOTH_A2DP_SPEAKER"),
+            ("OUT_HEADPHONE", "bt-a2dp", "OUT_BLUETOOTH_A2DP_HEADPHONES"),
+            ("IN_DEVICE", "bt-a2dp", "IN_BLUETOOTH_A2DP"),
+            ("OUT_HEADSET", "bt-le", "OUT_BLE_HEADSET"),
+            ("OUT_BROADCAST", "bt-le", "OUT_BLE_BROADCAST"),
+            ("IN_HEADSET", "bt-le", "IN_BLE_HEADSET"),
+            ("OUT_DEVICE", "hdmi", "OUT_HDMI"),
+            ("OUT_DEVICE", "ip-v4", "OUT_IP"),
+            ("IN_DEVICE", "ip-v4", "IN_IP"),
+            ("OUT_DEVICE", "multiroute", "OUT_MULTIROUTE"),
+        ] {
+            let runtime = AudioPort {
+                device_type: Some(format!("AUDIO_DEVICE_{framework_type}")),
+                ..AudioPort::default()
+            };
+            let config = AudioPort {
+                device_type: Some(aidl_type.to_string()),
+                connection: Some(connection.to_string()),
+                ..AudioPort::default()
+            };
+            assert!(device_semantics_compatible(&runtime, &config), "{aidl_type}/{connection}");
+        }
+        let usb = AudioPort {
+            device_type: Some("AUDIO_DEVICE_OUT_USB_HEADSET".to_string()),
+            ..AudioPort::default()
+        };
+        let bluetooth = AudioPort {
+            device_type: Some("OUT_HEADSET".to_string()),
+            connection: Some("bt-sco".to_string()),
+            ..AudioPort::default()
+        };
+        assert!(!device_semantics_compatible(&usb, &bluetooth));
     }
 
     #[test]

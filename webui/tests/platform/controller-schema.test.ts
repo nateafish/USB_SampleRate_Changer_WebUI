@@ -4,7 +4,7 @@ import { parseControllerSchema } from "../../src/platform/controller-schema";
 const valid = JSON.stringify({
   schema_version: 1,
   api_version: 1,
-  controller_version: "1.1.0",
+  controller_version: "1.1.1",
   capabilities: { json_schema: true, audio_restart_interface: true, batch_reapply: true },
   limits: {
     sample_rate: { min: 44100, max: 768000, integer: true },

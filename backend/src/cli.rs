@@ -6,10 +6,36 @@ use crate::domain::{ExtraAction, Settings};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ControllerCommand {
-    Schema { json: bool },
+    Schema {
+        json: bool,
+    },
     Status,
     Logs,
     Generated,
+    AidlInspect,
+    AidlInspectStdin,
+    AidlPreview {
+        policy: String,
+        rate: String,
+        bit_depth: String,
+    },
+    AidlMatchStdin {
+        xml: String,
+    },
+    AidlRewriteValidateStdin {
+        xml: String,
+        port: String,
+        rate: String,
+        bit_depth: String,
+    },
+    AidlPlanStdin {
+        xml: String,
+        policy: String,
+        rate: String,
+        bit_depth: String,
+        output: Option<String>,
+    },
+    AidlRestore,
     Preview(Settings),
     Apply(Settings),
     Reset,
@@ -27,6 +53,34 @@ pub(crate) fn parse(args: &[String]) -> Result<ControllerCommand, String> {
         Some("status") if args.len() == 2 => Ok(ControllerCommand::Status),
         Some("logs") if args.len() == 2 => Ok(ControllerCommand::Logs),
         Some("generated") if args.len() == 2 => Ok(ControllerCommand::Generated),
+        Some("aidl-inspect") if args.len() == 2 => Ok(ControllerCommand::AidlInspect),
+        Some("aidl-inspect-stdin") if args.len() == 2 => Ok(ControllerCommand::AidlInspectStdin),
+        Some("aidl-preview") if args.len() == 5 => Ok(ControllerCommand::AidlPreview {
+            policy: args[2].clone(),
+            rate: args[3].clone(),
+            bit_depth: args[4].clone(),
+        }),
+        Some("aidl-match-stdin") if args.len() == 3 => Ok(ControllerCommand::AidlMatchStdin {
+            xml: args[2].clone(),
+        }),
+        Some("aidl-rewrite-validate-stdin") if args.len() == 6 => {
+            Ok(ControllerCommand::AidlRewriteValidateStdin {
+                xml: args[2].clone(),
+                port: args[3].clone(),
+                rate: args[4].clone(),
+                bit_depth: args[5].clone(),
+            })
+        }
+        Some("aidl-plan-stdin") if args.len() == 6 || args.len() == 7 => {
+            Ok(ControllerCommand::AidlPlanStdin {
+                xml: args[2].clone(),
+                policy: args[3].clone(),
+                rate: args[4].clone(),
+                bit_depth: args[5].clone(),
+                output: args.get(6).cloned(),
+            })
+        }
+        Some("aidl-restore") if args.len() == 2 => Ok(ControllerCommand::AidlRestore),
         Some("preview") => Ok(ControllerCommand::Preview(parse_settings_args(&args[2..])?)),
         Some("apply") => Ok(ControllerCommand::Apply(parse_settings_args(&args[2..])?)),
         Some("reset") if args.len() == 2 => Ok(ControllerCommand::Reset),
@@ -34,7 +88,7 @@ pub(crate) fn parse(args: &[String]) -> Result<ControllerCommand, String> {
         Some("settings") => parse_settings_command(&args[2..]),
         Some("reapply") if args.len() == 2 => Ok(ControllerCommand::Reapply),
         _ => Err(format!(
-            "usage: {} {{schema [--json]|status|logs|generated|preview OPTIONS|apply OPTIONS|reset|extra TOOL ACTION|settings auto-reapply enable|disable|reapply}}",
+            "usage: {} {{schema [--json]|status|logs|generated|aidl-inspect|aidl-inspect-stdin|aidl-preview POLICY RATE DEPTH|aidl-match-stdin XML|aidl-rewrite-validate-stdin XML PORT RATE DEPTH|aidl-plan-stdin XML POLICY RATE DEPTH [OUT]|aidl-restore|preview OPTIONS|apply OPTIONS|reset|extra TOOL ACTION|settings auto-reapply enable|disable|reapply}}",
             args.first().map(String::as_str).unwrap_or("usbsrctl")
         )),
     }

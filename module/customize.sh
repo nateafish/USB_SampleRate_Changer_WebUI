@@ -9,24 +9,28 @@ ui_print "- No boot service; usable immediately"
 ui_print "- KernelSU/APatch WebUI required"
 
 # Match the upstream compatibility check without creating .config or changing
-# the active audio policy. Recent AIDL-only devices do not expose a readable
-# traditional audio policy XML through media.audio_policy's "Config source".
-ui_print "- Checking traditional audio policy XML support"
-POLICY_FILE="$(dumpsys media.audio_policy 2>/dev/null | awk '
+# the active audio policy.  AIDL-only devices intentionally have no traditional
+# XML path in Config source; the controller performs a stricter runtime module
+# XML/topology check when a policy operation is requested.
+ui_print "- Checking audio policy backend"
+CONFIG_SOURCE="$(dumpsys media.audio_policy 2>/dev/null | awk '
     /^ Config source: / {
-        print $3
+        sub(/^ Config source: /, "")
+        print
         exit
     }')"
 
-if [ -z "$POLICY_FILE" ] || [ ! -r "$POLICY_FILE" ]; then
-    ui_print "! Traditional audio policy XML was not detected"
-    if [ -n "$POLICY_FILE" ]; then
-        ui_print "! Reported policy file is not readable: $POLICY_FILE"
+if [ "$CONFIG_SOURCE" = "AIDL HAL" ]; then
+    ui_print "- Audio Core AIDL policy detected"
+elif [ -n "$CONFIG_SOURCE" ] && [ -r "$CONFIG_SOURCE" ]; then
+    ui_print "- Audio policy XML: $CONFIG_SOURCE"
+else
+    ui_print "! A supported audio policy backend was not detected"
+    if [ -n "$CONFIG_SOURCE" ]; then
+        ui_print "! Reported policy source is not readable: $CONFIG_SOURCE"
     fi
-    abort "! Recent AIDL-only devices are not supported"
+    abort "! Unsupported audio policy backend"
 fi
-
-ui_print "- Audio policy XML: $POLICY_FILE"
 
 # One-time install/upgrade migration for the legacy controller layout. Keep
 # every removal target as a literal absolute path so runtime variables cannot

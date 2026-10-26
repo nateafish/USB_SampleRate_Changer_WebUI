@@ -1,3 +1,5 @@
+mod aidl;
+mod aidl_backend;
 mod android;
 mod catalog;
 mod cli;
@@ -81,6 +83,31 @@ fn run(args: &[String]) -> Result<i32, String> {
             print_generated()?;
             Ok(0)
         }
+        ControllerCommand::AidlInspect => aidl_backend::print_inspect().map(|_| 0),
+        ControllerCommand::AidlInspectStdin => aidl_backend::print_inspect_stdin().map(|_| 0),
+        ControllerCommand::AidlPreview {
+            policy,
+            rate,
+            bit_depth,
+        } => aidl_backend::print_preview(&policy, &rate, &bit_depth).map(|_| 0),
+        ControllerCommand::AidlMatchStdin { xml } => {
+            aidl_backend::print_match_stdin(&xml).map(|_| 0)
+        }
+        ControllerCommand::AidlRewriteValidateStdin {
+            xml,
+            port,
+            rate,
+            bit_depth,
+        } => aidl_backend::print_rewrite_validate_stdin(&xml, &port, &rate, &bit_depth).map(|_| 0),
+        ControllerCommand::AidlPlanStdin {
+            xml,
+            policy,
+            rate,
+            bit_depth,
+            output,
+        } => aidl_backend::print_plan_stdin(&xml, &policy, &rate, &bit_depth, output.as_deref())
+            .map(|_| 0),
+        ControllerCommand::AidlRestore => aidl_backend::restore(),
         ControllerCommand::Preview(settings) => {
             let module_dir = module_dir()?;
             validate_settings(&settings, &module_dir)?;
@@ -108,6 +135,10 @@ pub(crate) fn operation_preflight(args: &[String]) -> Option<OperationPreflight>
     match args.get(1).map(String::as_str) {
         Some("apply" | "reset" | "reapply") => Some(OperationPreflight {
             action: args[1].clone(),
+            kind: OperationKind::Mutation,
+        }),
+        Some("aidl-restore") => Some(OperationPreflight {
+            action: "aidl-restore".to_string(),
             kind: OperationKind::Mutation,
         }),
         Some("settings") => Some(OperationPreflight {
@@ -194,6 +225,32 @@ fn run_reapply() -> Result<i32, String> {
         return Ok(0);
     }
     let plan = build_reapply_plan(&stored);
+    // AIDL policy XML is applied through its own validated adapter.  Release
+    // the batch lock before replaying so each adapter operation can use the
+    // same flock and common audit pipeline; the traditional path below keeps
+    // the upstream coalesced-restart behavior unchanged.
+    if aidl_backend::active_is_aidl()
+        && plan
+            .iter()
+            .any(|action| matches!(action, domain::ReapplyAction::Policy(_)))
+    {
+        drop(lock);
+        let mut applied = 0;
+        for action in plan {
+            let code = match action {
+                domain::ReapplyAction::Policy(settings) => {
+                    operation::run_operation(settings, Action::Apply)?
+                }
+                domain::ReapplyAction::Extra(extra) => operation::run_extra(extra)?,
+            };
+            if code != 0 {
+                return Ok(code);
+            }
+            applied += 1;
+        }
+        println!("reapplied={applied}");
+        return Ok(0);
+    }
     let applied = plan.len();
     let code = run_reapply_batch_locked(&plan, &lock)?;
     if code != 0 {

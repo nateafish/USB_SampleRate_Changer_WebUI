@@ -22,6 +22,25 @@ export type DeviceSystemStatus = {
   controllerVersion?: string;
   scriptVersion?: string;
   moduleDir?: string;
+  audioBackend?: "aidl" | "traditional" | "unknown";
+  audioConfigSource?: string;
+  aidlCoreVersion?: string;
+  aidlCoreVersions?: string;
+  aidlVersionSupported: boolean;
+  aidlHalService?: string;
+  aidlModuleCount?: number;
+  aidlUsbOutputDeviceCount?: number;
+  aidlUsbReachableMixPortCount?: number;
+  aidlUsbPortBehaviors?: string;
+  aidlUsbPortSummary?: string;
+  aidlUsbDynamicPortCount?: number;
+  aidlConfigAdapter?: string;
+  aidlConfigPath?: string;
+  aidlConfigTopology?: string;
+  aidlConfigError?: string;
+  aidlPreviewSupported: boolean;
+  aidlApplySupported: boolean;
+  aidlMountActive: boolean;
   audioserverPid?: string;
   a2dpConnected: boolean;
   a2dpState: "connected" | "disconnected" | "unknown";
@@ -69,6 +88,18 @@ function optionalExitCode(value: string | undefined): number | undefined {
   if (value === undefined || value.trim() === "") return undefined;
   const numeric = Number(value);
   return Number.isInteger(numeric) ? numeric : undefined;
+}
+
+function optionalNumber(value: string | undefined, previous?: number): number | undefined {
+  if (value === undefined || value.trim() === "") return previous;
+  const numeric = Number(value);
+  return Number.isInteger(numeric) && numeric >= 0 ? numeric : previous;
+}
+
+function audioBackend(value: string | undefined, previous?: DeviceSystemStatus["audioBackend"]): DeviceSystemStatus["audioBackend"] {
+  return value === "aidl" || value === "traditional" || value === "unknown"
+    ? value
+    : previous;
 }
 
 function operationState(value: string | undefined): DeviceSystemStatus["operationState"] {
@@ -204,6 +235,33 @@ export function deviceStatusFromControllerStatus(
       controllerVersion: status.controller_version ?? previous?.system.controllerVersion,
       scriptVersion: status.script_version ?? previous?.system.scriptVersion,
       moduleDir: status.module_dir ?? previous?.system.moduleDir,
+      audioBackend: audioBackend(status.audio_backend, previous?.system.audioBackend),
+      audioConfigSource: status.audio_config_source ?? previous?.system.audioConfigSource,
+      aidlCoreVersion: status.aidl_core_version ?? previous?.system.aidlCoreVersion,
+      aidlCoreVersions: status.aidl_core_versions ?? previous?.system.aidlCoreVersions,
+      aidlVersionSupported: status.aidl_version_supported === undefined
+        ? previous?.system.aidlVersionSupported ?? false
+        : statusFlag(status.aidl_version_supported),
+      aidlHalService: status.aidl_hal_service ?? previous?.system.aidlHalService,
+      aidlModuleCount: optionalNumber(status.aidl_module_count, previous?.system.aidlModuleCount),
+      aidlUsbOutputDeviceCount: optionalNumber(status.aidl_usb_output_device_count, previous?.system.aidlUsbOutputDeviceCount),
+      aidlUsbReachableMixPortCount: optionalNumber(status.aidl_usb_reachable_mix_port_count, previous?.system.aidlUsbReachableMixPortCount),
+      aidlUsbPortBehaviors: status.aidl_usb_port_behaviors ?? previous?.system.aidlUsbPortBehaviors,
+      aidlUsbPortSummary: status.aidl_usb_port_summary ?? previous?.system.aidlUsbPortSummary,
+      aidlUsbDynamicPortCount: optionalNumber(status.aidl_usb_dynamic_port_count, previous?.system.aidlUsbDynamicPortCount),
+      aidlConfigAdapter: status.aidl_config_adapter ?? previous?.system.aidlConfigAdapter,
+      aidlConfigPath: status.aidl_config_path ?? previous?.system.aidlConfigPath,
+      aidlConfigTopology: status.aidl_config_topology ?? previous?.system.aidlConfigTopology,
+      aidlConfigError: status.aidl_config_error ?? previous?.system.aidlConfigError,
+      aidlPreviewSupported: status.aidl_preview_supported === undefined
+        ? previous?.system.aidlPreviewSupported ?? false
+        : statusFlag(status.aidl_preview_supported),
+      aidlApplySupported: status.aidl_apply_supported === undefined
+        ? previous?.system.aidlApplySupported ?? false
+        : statusFlag(status.aidl_apply_supported),
+      aidlMountActive: status.aidl_mount_active === undefined
+        ? previous?.system.aidlMountActive ?? false
+        : statusFlag(status.aidl_mount_active),
       audioserverPid: status.audioserver_pid ?? previous?.system.audioserverPid,
       a2dpConnected: currentA2dpState === "connected",
       a2dpState: currentA2dpState,

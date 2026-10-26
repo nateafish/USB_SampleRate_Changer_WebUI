@@ -5,7 +5,7 @@ English reference：[README.md](../README.md)
 
 本项目为 [USB_SampleRate_Changer](https://github.com/yzyhk904/USB_SampleRate_Changer)的 WebUI 管理器。模块通过内置的 Rust 二进制后端用于执行 `USB_SampleRate_Changer` 的脚本。
 
-> 1.0.6 实验性加入 Audio Core AIDL v2/v3 后端。原有传统 XML/HIDL 路径及上游子模块保持不变；只有厂商 module XML 与实时拓扑完整匹配时，才允许持久应用 AIDL 配置。
+> 1.1.1 实验性加入 Audio Core AIDL v2/v3 后端。原有传统 XML/HIDL 路径及上游子模块保持不变；只有厂商 module XML 与实时拓扑完整匹配时，才允许持久应用 AIDL 配置。
 
 ## 仓库结构
 

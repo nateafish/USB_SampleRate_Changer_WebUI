@@ -65,6 +65,9 @@ pub(crate) fn print_status(module_dir: &Path) {
             None => "unknown",
         }
     );
+    // The AIDL probe is additive: on traditional XML/HIDL devices it reports
+    // the existing backend and never changes the legacy status fields.
+    print!("{}", crate::aidl_backend::render_status());
     if let Ok(last_status) = fs::read_to_string(log_root().join("last.status")) {
         print!("{last_status}");
     }

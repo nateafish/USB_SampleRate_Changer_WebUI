@@ -34,6 +34,11 @@ export function PolicyPage(props: {
         ? props.tx("policy.status.disconnected")
         : props.tx("policy.status.unknown");
   };
+  const system = () => props.model.status().system;
+  const isAidl = () => system().audioBackend === "aidl";
+  const aidlLabel = () => system().aidlCoreVersion
+    ? `AIDL v${system().aidlCoreVersion}`
+    : "AIDL";
   const policySelectOptions = () => props.policyOptions.map((option) => [option.value, label(option)] as const);
   const rateSelect = () => [...props.rateOptions.map((option) => [option.value, label(option)] as const), ["custom", props.tx("rate.custom")] as const];
   const bitSelect = () => props.bitDepthOptions.map((option) => [option.value, label(option)] as const);
@@ -47,7 +52,16 @@ export function PolicyPage(props: {
     <section class="page-panel" data-page="policy" aria-label={props.tx("policy.page")}>
       <main class="page-content">
         <section class="card preview-card">
-          <SectionHeading title={props.tx("policy.preview")} />
+          <div class="section-heading">
+            <h2>{props.tx("policy.preview")}</h2>
+            <Show when={isAidl()}>
+              <span
+                class="aidl-tip"
+                title={props.tx("policy.aidl.tip")}
+                aria-label={props.tx("policy.aidl.tip")}
+              >{aidlLabel()}</span>
+            </Show>
+          </div>
           <div class="summary-line">
             <span class="summary-key">{props.tx("policy.summary.policy")}</span>
             <strong>{label(props.policyOptions.find((option) => option.value === props.model.settings().policy) ?? { value: "", labelKey: "" })}</strong>
@@ -61,7 +75,7 @@ export function PolicyPage(props: {
           </div>
           <div class="preview-actions">
             <button class="secondary-button" onClick={() => void props.model.reset()} disabled={props.model.busy()}>{props.model.activeOperation() === "policy.reset" ? props.tx("common.working") : props.tx("common.reset")}</button>
-            <button class="primary-button" onClick={() => void props.model.apply()} disabled={props.model.busy()}>{props.model.activeOperation() === "policy.apply" ? props.tx("common.working") : props.tx("common.apply")}</button>
+            <button class="primary-button" onClick={() => void props.model.apply()} disabled={props.model.busy() || (isAidl() && !system().aidlApplySupported)}>{props.model.activeOperation() === "policy.apply" ? props.tx("common.working") : props.tx("common.apply")}</button>
           </div>
         </section>
 
@@ -93,6 +107,34 @@ export function PolicyPage(props: {
             }}</For>
           </div>
         </section>
+
+        <Show when={isAidl()}>
+          <details class="card aidl-card">
+            <summary class="aidl-summary">
+              <strong>{aidlLabel()}</strong>
+              <span>{system().aidlConfigAdapter || "read-only"}</span>
+              <span>{system().aidlConfigTopology || "—"}</span>
+              <span>USB {system().aidlUsbReachableMixPortCount ?? 0}</span>
+            </summary>
+            <div class="aidl-detail-content">
+              <div class="aidl-detail-row">
+                <span>{props.tx("policy.aidl.source")}</span>
+                <strong>{system().aidlConfigPath || system().audioConfigSource || "—"}</strong>
+              </div>
+              <div class="aidl-detail-row">
+                <span>{props.tx("policy.aidl.behaviors")}</span>
+                <strong class="aidl-port-behaviors">{system().aidlUsbPortBehaviors || "—"}</strong>
+              </div>
+              <div class="aidl-detail-row">
+                <span>{props.tx("policy.aidl.dynamic")}</span>
+                <strong>{system().aidlUsbDynamicPortCount ?? 0}</strong>
+              </div>
+              <Show when={system().aidlConfigError}>
+                <p class="field-help">{system().aidlConfigError}</p>
+              </Show>
+            </div>
+          </details>
+        </Show>
 
         <section class="status-strip card">
           <div><span class="label">audioserver</span><strong>{props.model.status().system.audioserverPid || props.tx("policy.status.notDetected")}</strong></div>

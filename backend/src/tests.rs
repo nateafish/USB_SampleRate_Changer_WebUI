@@ -326,7 +326,7 @@ fn renders_machine_schema_with_stable_contract_fields() {
     for field in [
         "\"schema_version\":1",
         "\"api_version\":1",
-        "\"controller_version\":\"1.1.0\"",
+        "\"controller_version\":\"1.1.1\"",
         "\"limits\":",
         "\"policy\":{",
         "\"sample_rates\":[",

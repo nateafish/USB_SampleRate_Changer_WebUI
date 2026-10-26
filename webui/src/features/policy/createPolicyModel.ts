@@ -57,7 +57,19 @@ const EMPTY_STATUS: DeviceStatus = {
   tools: defaultToolsSettings(),
   tuning: defaultTuningSettings(),
   autoReapply: false,
-  system: { a2dpConnected: false, a2dpState: "unknown", namespaceOk: false, stateDegraded: false, lastTimedOut: false, lastStdoutTruncated: false, lastStderrTruncated: false }
+  system: {
+    a2dpConnected: false,
+    a2dpState: "unknown",
+    namespaceOk: false,
+    stateDegraded: false,
+    lastTimedOut: false,
+    lastStdoutTruncated: false,
+    lastStderrTruncated: false,
+    aidlVersionSupported: false,
+    aidlPreviewSupported: false,
+    aidlApplySupported: false,
+    aidlMountActive: false
+  }
 };
 
 function commandError(

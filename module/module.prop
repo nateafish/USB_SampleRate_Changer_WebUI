@@ -1,7 +1,7 @@
 id=usb_samplerate_changer_webui
 name=USB SampleRate Changer WebUI
-version=1.1.0
-versionCode=1100
+version=1.1.1
+versionCode=1101
 author=zyhk / WebUI wrapper by Sivon
 description=A WebUI wrapper for USB_SampleRate_Changer (*Not only for USB)
 updateJson=https://github.com/SivonZn/USB_SampleRate_Changer_WebUI/releases/latest/download/update.json

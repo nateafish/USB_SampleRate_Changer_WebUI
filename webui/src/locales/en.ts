@@ -123,6 +123,10 @@ export const english = {
   "policy.apply.a2dpSuccess": "Configuration applied; A2DP route is healthy",
   "policy.apply.progress": "Applying changes; audio will be briefly interrupted",
   "policy.apply.success": "Configuration applied",
+  "policy.aidl.tip": "Audio Core AIDL is active. The controller checks the live module topology before applying a policy.",
+  "policy.aidl.source": "Configuration source",
+  "policy.aidl.behaviors": "USB port behaviors",
+  "policy.aidl.dynamic": "Dynamic USB ports",
   "policy.bitDepth": "Bit depth / format",
   "policy.bitDepth.select": "Select bit depth and format",
   "policy.customRate.accept": "Got it",
@@ -351,4 +355,3 @@ export const english = {
 } as const;
 
 export type TranslationKey = keyof typeof english;
-

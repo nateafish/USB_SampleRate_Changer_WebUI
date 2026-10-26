@@ -125,6 +125,10 @@ export const chinese = {
   "policy.apply.a2dpSuccess": "配置已应用，A2DP 路由正常",
   "policy.apply.progress": "正在应用更改，音频将会短暂断开",
   "policy.apply.success": "配置已应用",
+  "policy.aidl.tip": "当前使用 Audio Core AIDL；控制器会在应用前核对实时 module 拓扑。",
+  "policy.aidl.source": "配置来源",
+  "policy.aidl.behaviors": "USB 端口行为",
+  "policy.aidl.dynamic": "动态 USB 端口",
   "policy.bitDepth": "位深 / 格式",
   "policy.bitDepth.select": "选择位深与格式",
   "policy.customRate.accept": "知道了",
@@ -351,4 +355,3 @@ export const chinese = {
   "tuning.risk.title": "风险提示：",
   "tuning.title": "系统 Jitter 优化",
 } satisfies Record<TranslationKey, string>;
-

@@ -27,10 +27,22 @@ esac
 # rustup is available, prefer its cargo/rustc proxies so the pinned Android
 # target and the selected compiler always come from the same toolchain.
 if command -v rustup >/dev/null 2>&1; then
-    RUSTUP_BIN_DIR="$(dirname -- "$(command -v rustup)")"
-    if [ -x "$RUSTUP_BIN_DIR/cargo" ] && [ -x "$RUSTUP_BIN_DIR/rustc" ]; then
-        PATH="$RUSTUP_BIN_DIR:$PATH"
-        export PATH
+    # Resolve the active rustup toolchain explicitly.  Homebrew can install a
+    # standalone cargo/rustc next to rustup; preferring that pair would hide
+    # an otherwise installed Android target.
+    RUSTUP_CARGO_PATH="$(rustup which cargo 2>/dev/null || true)"
+    if [ -n "$RUSTUP_CARGO_PATH" ]; then
+        RUSTUP_TOOLCHAIN_BIN="$(dirname -- "$RUSTUP_CARGO_PATH")"
+        if [ -x "$RUSTUP_TOOLCHAIN_BIN/cargo" ] && [ -x "$RUSTUP_TOOLCHAIN_BIN/rustc" ]; then
+            PATH="$RUSTUP_TOOLCHAIN_BIN:$PATH"
+            export PATH
+        fi
+    else
+        RUSTUP_BIN_DIR="$(dirname -- "$(command -v rustup)")"
+        if [ -x "$RUSTUP_BIN_DIR/cargo" ] && [ -x "$RUSTUP_BIN_DIR/rustc" ]; then
+            PATH="$RUSTUP_BIN_DIR:$PATH"
+            export PATH
+        fi
     fi
 fi
 
