@@ -3,6 +3,11 @@
 The AIDL implementation is additive. Traditional XML and HIDL devices continue
 to use the bundled `USB_SampleRate_Changer.sh` and its existing templates.
 
+This backend is experimental and incomplete. Live validation currently covers
+one QTI Audio Core v3 device and a Direct PCM apply/reset cycle, not universal
+AIDL compatibility. See [the OS4 validation record](NEZHA_OS4_VALIDATION.md) for
+the tested build and remaining gaps.
+
 The backend does not issue version-specific Binder calls. It consumes the
 framework's `media.audio_policy` topology and the vendor module XML from which
 the HAL creates that topology, so the same parser and writer can cover Audio
@@ -143,3 +148,16 @@ gates before mounting. It stores the original and candidate under the module
 state directory; boot restore refuses to proceed after an OTA changes the
 underlying source XML. Traditional XML/HIDL devices still use the upstream
 script unchanged.
+
+The writer uses a file bind mount and does not require a separate audio overlay
+module. It checks that the HAL, audioserver and writer share the global mount
+namespace before changing mounts. Android toybox does not support
+`chcon --reference`; the adapter reads the original file's SELinux label and
+applies it to the candidate instead.
+
+The traditional XML template switches (DRC, USBv2 and Bluetooth QTI forcing)
+and the mainline `-dynamic` XML templates are not implemented by this AIDL
+writer. The WebUI hides those controls on AIDL devices, and the controller
+rejects unsupported switches instead of silently ignoring them. An unchanged
+dynamic profile after reload is not accepted as evidence that a requested
+rate and format took effect.
