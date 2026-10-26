@@ -2,7 +2,7 @@ import { For, Show } from "solid-js";
 import SelectField from "../../SelectField";
 import type { Language } from "../../i18n";
 import type { PolicySettings } from "../../domain/models";
-import { displayRate, selectedRate } from "../../domain/policy";
+import { displayRate, selectedRate, groupPolicyOptions, policyOptionsForMode, policyWithDynamicCompatibility } from "../../domain/policy";
 import { SectionHeading } from "../../shared/components/SectionHeading";
 import { ToggleRow } from "../../shared/components/ToggleRow";
 import type { Translator } from "../../shared/types";
@@ -39,7 +39,31 @@ export function PolicyPage(props: {
   const aidlLabel = () => system().aidlCoreVersion
     ? `AIDL v${system().aidlCoreVersion}`
     : "AIDL";
-  const policySelectOptions = () => props.policyOptions.map((option) => [option.value, label(option)] as const);
+  const dynamicMode = () => props.model.settings().policy.endsWith("-dynamic");
+  const visiblePolicyOptions = () => isAidl()
+    ? props.policyOptions.filter(({ value }) => value !== "legacy" && !value.endsWith("-dynamic"))
+    : policyOptionsForMode(props.policyOptions, props.model.settings().policy);
+  const selectedPolicyLabel = () => label(props.policyOptions.find((option) => option.value === props.model.settings().policy) ?? { value: "", labelKey: "" });
+  const policySelectGroups = () => groupPolicyOptions(visiblePolicyOptions()).map(({ labelKey, options }) => ({
+    label: props.tx(labelKey),
+    options: options.map((option) => [option.value,
+      option.value === "legacy" || option.value === "legacy-dynamic"
+        ? props.tx(`policy.option.${option.value}.listLabel`) : label(option)
+    ] as const)
+  }));
+  const setDynamicCompatibility = (enabled: boolean) => {
+    props.model.update(
+      "policy",
+      policyWithDynamicCompatibility(
+        props.model.settings().policy,
+        enabled,
+        props.policyOptions.map(({ value }) => value)
+      )
+    );
+    if (enabled && props.model.settings().forceBluetoothQti) {
+      props.model.update("forceBluetoothQti", false);
+    }
+  };
   const rateSelect = () => [...props.rateOptions.map((option) => [option.value, label(option)] as const), ["custom", props.tx("rate.custom")] as const];
   const bitSelect = () => props.bitDepthOptions.map((option) => [option.value, label(option)] as const);
   const switchBindings = {
@@ -64,11 +88,14 @@ export function PolicyPage(props: {
           </div>
           <div class="summary-line">
             <span class="summary-key">{props.tx("policy.summary.policy")}</span>
-            <strong>{label(props.policyOptions.find((option) => option.value === props.model.settings().policy) ?? { value: "", labelKey: "" })}</strong>
+            <strong>{selectedPolicyLabel()}</strong>
+          </div>
+          <div class="summary-line">
             <span class="summary-key">{props.tx("policy.summary.format")}</span>
             <strong>{rateLabel(selectedRate(props.model.settings()))} · {label(props.bitDepthOptions.find((option) => option.value === props.model.settings().bitDepth) ?? { value: "", labelKey: "" })}</strong>
           </div>
           <div class="tag-row">
+            <Show when={dynamicMode()}><span class="tag">{props.tx("policy.dynamic.status")}</span></Show>
             <Show when={props.model.settings().drc}><span class="tag">DRC</span></Show>
             <Show when={props.model.settings().forceUsbv2}><span class="tag">USBv2</span></Show>
             <Show when={props.model.settings().forceBluetoothQti}><span class="tag">Bluetooth QTI</span></Show>
@@ -83,7 +110,8 @@ export function PolicyPage(props: {
           <article class="card section-card">
             <SectionHeading title={props.tx("policy.section")} />
             <div class="field-label-row"><label class="field-label" for="policy">{props.tx("policy.template")}</label><button type="button" class="inline-link" onClick={props.onOpenHelp}>ⓘ {props.tx("policy.guide")}</button></div>
-            <SelectField id="policy" title={props.tx("policy.template.select")} value={props.model.settings().policy} options={policySelectOptions()} language={props.language} onChange={(value) => props.model.update("policy", value)} />
+            <SelectField id="policy" title={props.tx("policy.template.select")} value={props.model.settings().policy} options={[]} groups={policySelectGroups()} displayLabel={selectedPolicyLabel()} language={props.language} onChange={(value) => props.model.update("policy", value)} />
+            <Show when={!isAidl()}><div class="policy-mode-toggle"><ToggleRow label={props.tx("policy.dynamic.label")} description={props.tx("policy.dynamic.description")} checked={dynamicMode()} onChange={setDynamicCompatibility} /></div></Show>
           </article>
 
           <article class="card section-card">
@@ -96,17 +124,18 @@ export function PolicyPage(props: {
           </article>
         </section>
 
-        <section class="card section-card">
+        <Show when={!isAidl()}><section class="card section-card">
           <SectionHeading title={props.tx("policy.switches")} />
           <div class="switch-grid">
             <For each={props.switchOptions}>{(option) => {
               const key = switchBindings[option.value as keyof typeof switchBindings];
+              if (dynamicMode() && option.value === "force_bluetooth_qti") return null;
               return key
                 ? <ToggleRow label={props.tx(option.labelKey)} description={option.descriptionKey ? props.tx(option.descriptionKey) : ""} checked={props.model.settings()[key]} onChange={(value) => props.model.update(key, value)} />
                 : null;
             }}</For>
           </div>
-        </section>
+        </section></Show>
 
         <Show when={isAidl()}>
           <details class="card aidl-card">
@@ -140,7 +169,7 @@ export function PolicyPage(props: {
           <div><span class="label">audioserver</span><strong>{props.model.status().system.audioserverPid || props.tx("policy.status.notDetected")}</strong></div>
           <div><span class="label">{props.tx("policy.status.scriptVersion")}</span><strong>{props.model.status().system.scriptVersion || "—"}</strong></div>
           <div><span class="label">{props.tx("policy.status.sampleRate")}</span><strong>{props.model.status().policy.rate ? rateLabel(selectedRate(props.model.status().policy)) : "—"}</strong></div>
-          <div><span class="label">Bluetooth A2DP</span><strong>{a2dpLabel()}</strong></div>
+          <div><span class="label">{props.tx("policy.status.bluetoothMedia")}</span><strong>{a2dpLabel()}</strong></div>
         </section>
         <Show when={props.model.status().system.stateDegraded}>
           <div class="notice danger-notice status-health"><strong>{props.tx("policy.status.degraded")}</strong><span>{props.model.status().system.stateDegradedReason || props.tx("policy.status.degradedUnknown")}</span></div>

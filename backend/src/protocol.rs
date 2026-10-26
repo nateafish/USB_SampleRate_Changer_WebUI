@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use crate::android::{bluetooth_a2dp_state, namespace_info};
 use crate::catalog::{
     BIT_DEPTHS, BLUETOOTH_HAL_OPTIONS, DIAGNOSTIC_TYPES, DOCUMENTED_RATES, IO_SCHEDULERS, IO_TONES,
-    JITTER_BASE_FEATURES, JITTER_FEATURES, POLICIES, RESAMPLER_BYPASSES, RESAMPLER_MODES,
-    RESAMPLER_PRESETS, RESAMPLER_PRESET_GROUPS,
+    JITTER_FEATURES, POLICIES, RESAMPLER_BYPASSES, RESAMPLER_MODES, RESAMPLER_PRESETS,
+    RESAMPLER_PRESET_GROUPS,
 };
 use crate::domain::{Settings, StoredSettings};
 use crate::paths::{log_root, CORE_DIR, LOG_ROOT};
@@ -56,10 +56,11 @@ pub(crate) fn print_status(module_dir: &Path) {
             .unwrap_or_default()
     );
     println!("self_ns={}", namespace.self_ns.as_deref().unwrap_or(""));
+    println!("init_ns={}", namespace.init_ns.as_deref().unwrap_or(""));
     println!("audio_ns={}", namespace.audio_ns.as_deref().unwrap_or(""));
     println!(
         "namespace_ok={}",
-        match namespace.matches() {
+        match namespace.is_global() {
             Some(true) => "1",
             Some(false) => "0",
             None => "unknown",
@@ -105,6 +106,10 @@ fn print_stored_settings(settings: &StoredSettings) {
     println!("io_tone={}", settings.io_tone);
     println!("wifi_no_restart={}", bool_number(settings.wifi_no_restart));
     println!("auto_reapply={}", bool_number(settings.auto_reapply));
+    println!(
+        "audioserver_priority={}",
+        bool_number(audioserver_priority_enabled())
+    );
     for feature in JITTER_FEATURES {
         println!(
             "jitter_{feature}={}",
@@ -127,6 +132,10 @@ fn print_stored_settings(settings: &StoredSettings) {
             )
         );
     }
+}
+
+fn audioserver_priority_enabled() -> bool {
+    crate::audioserver_priority::enabled()
 }
 
 fn upstream_script_version(module_dir: &Path) -> String {
@@ -340,7 +349,7 @@ fn render_schema_json(module_dir: &Path) -> String {
     );
     out.push_str(",\"default\":\"offload\",\"recommended\":\"offload\"");
     out.push_str(",\"actions\":[");
-    for (index, value) in ["status", "aosp", "legacy", "offload", "sysbta"]
+    for (index, value) in ["status", "reset", "aosp", "legacy", "offload", "sysbta"]
         .iter()
         .enumerate()
     {
@@ -356,13 +365,17 @@ fn render_schema_json(module_dir: &Path) -> String {
             &format!("bluetooth_hal.action.{value}.label"),
         );
         out.push_str(",\"kind\":");
-        out.push_str(&json_quote(if *value == "status" {
-            "status"
-        } else {
-            "set"
+        out.push_str(&json_quote(match *value {
+            "status" => "status",
+            "reset" => "reset",
+            _ => "set",
         }));
         out.push_str(",\"selectable\":");
-        out.push_str(if *value == "status" { "false" } else { "true" });
+        out.push_str(if matches!(*value, "status" | "reset") {
+            "false"
+        } else {
+            "true"
+        });
         out.push('}');
     }
     out.push_str("],\"options\":[");
@@ -390,7 +403,7 @@ fn render_schema_json(module_dir: &Path) -> String {
         out.push_str(if *value == "offload" { "true" } else { "false" });
         out.push('}');
     }
-    out.push_str("],\"operations\":{\"status\":true,\"set\":true,\"reset\":false}}");
+    out.push_str("],\"operations\":{\"status\":true,\"set\":true,\"reset\":true}}");
 
     out.push_str(",\"resampler\":{");
     out.push_str("\"available\":true,\"tool\":\"resampler\",");
@@ -627,7 +640,7 @@ fn render_schema_json(module_dir: &Path) -> String {
     );
     out.push_str(",\"wifi_no_restart\":{\"supported\":true,\"default\":false,\"label_key\":\"jitter.wifi.no_restart.label\",\"description_key\":\"jitter.wifi.no_restart.description\"}");
     out.push_str(",\"reset_features\":[");
-    json_string_array(&mut out, JITTER_BASE_FEATURES);
+    json_string_array(&mut out, JITTER_FEATURES);
     out.push_str("],\"operations\":{\"status\":true,\"set\":true,\"reset\":true}}");
 
     out.push_str(",\"diagnostics\":{");
@@ -749,6 +762,9 @@ pub(crate) fn collect_templates(root: &Path) -> Vec<String> {
                 walk(root, &path, output);
             } else if file_type.is_file() && path.extension() == Some(OsStr::new("xml")) {
                 if let Ok(relative) = path.strip_prefix(root) {
+                    if relative == Path::new("offload_direct_dynamic_template.xml") {
+                        continue; // Requires the dedicated inheritance generator.
+                    }
                     output.push(relative.to_string_lossy().replace('\\', "/"));
                 }
             }

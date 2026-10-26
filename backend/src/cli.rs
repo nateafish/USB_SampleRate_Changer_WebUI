@@ -39,8 +39,10 @@ pub(crate) enum ControllerCommand {
     Preview(Settings),
     Apply(Settings),
     Reset,
+    Cleanup,
     Extra(ExtraAction),
     SetAutoReapply(bool),
+    SetAudioserverPriority(bool),
     Reapply,
 }
 
@@ -84,24 +86,34 @@ pub(crate) fn parse(args: &[String]) -> Result<ControllerCommand, String> {
         Some("preview") => Ok(ControllerCommand::Preview(parse_settings_args(&args[2..])?)),
         Some("apply") => Ok(ControllerCommand::Apply(parse_settings_args(&args[2..])?)),
         Some("reset") if args.len() == 2 => Ok(ControllerCommand::Reset),
+        Some("cleanup") if args.len() == 2 => Ok(ControllerCommand::Cleanup),
         Some("extra") => Ok(ControllerCommand::Extra(parse_extra_action(&args[2..])?)),
         Some("settings") => parse_settings_command(&args[2..]),
         Some("reapply") if args.len() == 2 => Ok(ControllerCommand::Reapply),
         _ => Err(format!(
-            "usage: {} {{schema [--json]|status|logs|generated|aidl-inspect|aidl-inspect-stdin|aidl-preview POLICY RATE DEPTH|aidl-match-stdin XML|aidl-rewrite-validate-stdin XML PORT RATE DEPTH|aidl-plan-stdin XML POLICY RATE DEPTH [OUT]|aidl-restore|preview OPTIONS|apply OPTIONS|reset|extra TOOL ACTION|settings auto-reapply enable|disable|reapply}}",
+            "usage: {} {{schema [--json]|status|logs|generated|aidl-inspect|aidl-inspect-stdin|aidl-preview POLICY RATE DEPTH|aidl-match-stdin XML|aidl-rewrite-validate-stdin XML PORT RATE DEPTH|aidl-plan-stdin XML POLICY RATE DEPTH [OUT]|aidl-restore|preview OPTIONS|apply OPTIONS|reset|cleanup|extra TOOL ACTION|settings auto-reapply|audioserver-priority enable|disable|reapply}}",
             args.first().map(String::as_str).unwrap_or("usbsrctl")
         )),
     }
 }
 
 fn parse_settings_command(args: &[String]) -> Result<ControllerCommand, String> {
-    if args.len() != 2 || args[0] != "auto-reapply" {
-        return Err("settings usage: settings auto-reapply enable|disable".to_string());
+    if args.len() != 2 {
+        return Err(
+            "settings usage: settings auto-reapply|audioserver-priority enable|disable".to_string(),
+        );
     }
-    match args[1].as_str() {
-        "enable" => Ok(ControllerCommand::SetAutoReapply(true)),
-        "disable" => Ok(ControllerCommand::SetAutoReapply(false)),
-        _ => Err("auto-reapply must be enable or disable".to_string()),
+    let enabled = match args[1].as_str() {
+        "enable" => true,
+        "disable" => false,
+        _ => return Err("setting value must be enable or disable".to_string()),
+    };
+    match args[0].as_str() {
+        "auto-reapply" => Ok(ControllerCommand::SetAutoReapply(enabled)),
+        "audioserver-priority" => Ok(ControllerCommand::SetAudioserverPriority(enabled)),
+        _ => Err(
+            "settings usage: settings auto-reapply|audioserver-priority enable|disable".to_string(),
+        ),
     }
 }
 
@@ -172,9 +184,13 @@ pub(crate) fn parse_extra_action(args: &[String]) -> Result<ExtraAction, String>
     let action = args.get(1).map(String::as_str).ok_or_else(extra_usage)?;
     match tool {
         "bluetooth-hal" => {
-            if args.len() != 2 || (action != "status" && !BLUETOOTH_HAL_OPTIONS.contains(&action)) {
+            if args.len() != 2
+                || (action != "status"
+                    && action != "reset"
+                    && !BLUETOOTH_HAL_OPTIONS.contains(&action))
+            {
                 return Err(
-                    "bluetooth-hal action must be status, aosp, legacy, offload, or sysbta"
+                    "bluetooth-hal action must be status, reset, aosp, legacy, offload, or sysbta"
                         .to_string(),
                 );
             }

@@ -266,17 +266,12 @@ new file mode 100755
 index 0000000..88eec72
 --- /dev/null
 +++ b/extras/reload-audio-servers.sh
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,115 @@
 +#!/system/bin/sh
 +
-+restart_vendor=0
 +bluetooth_mode=""
 +while [ $# -gt 0 ]; do
 +    case "$1" in
-+        --all)
-+            restart_vendor=1
-+            shift
-+            ;;
 +        --bluetooth-hal)
 +            shift
 +            case "${1:-}" in
@@ -291,7 +286,7 @@ index 0000000..88eec72
 +            esac
 +            ;;
 +        -h | --help)
-+            echo "Usage: ${0##*/} [--all] [--bluetooth-hal MODE]"
++            echo "Usage: ${0##*/} [--bluetooth-hal MODE]"
 +            exit 0
 +            ;;
 +        *)
@@ -383,11 +378,6 @@ index 0000000..88eec72
 +if [ "$i" -ge 50 ]; then
 +    echo "audioserver reload failed!" 1>&2
 +    exit 1
-+fi
-+
-+if [ "$restart_vendor" -eq 1 ] && [ -z "$bluetooth_mode" ] \
-+        && [ -n "`getprop init.svc.vendor.audio-hal`" ]; then
-+    setprop ctl.restart vendor.audio-hal 1>"/dev/null" 2>&1
 +fi
 +
 +echo "audioserver reload complete"

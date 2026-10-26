@@ -1,0 +1,316 @@
+diff --git a/extras/change-bluetooth-hal.sh b/extras/change-bluetooth-hal.sh
+index eea1d59..7b9713e 100644
+--- a/extras/change-bluetooth-hal.sh
++++ b/extras/change-bluetooth-hal.sh
+@@ -2,7 +2,255 @@
+ 
+ function usage()
+ {
+-    echo "Usage: ${0##*/} [--help] [--status] [ aosp | legacy | offload | sysbta ]" 1>&2
++    echo "Usage: ${0##*/} [--help] [--status] [--reset] [ aosp | legacy | offload | sysbta ]" 1>&2
++}
++
++STATE_ROOT="/data/adb/usb_samplerate_changer_webui"
++BASELINE_FILE="$STATE_ROOT/bluetooth-hal-baseline.conf"
++
++function valid_boolean_value()
++{
++    case "$1" in
++        true | false | 0 | 1) return 0 ;;
++        *) return 1 ;;
++    esac
++}
++
++function detect_rom_properties()
++{
++    property_files="
++/system/etc/prop.default
++/system/prop.default
++/system/build.prop
++/system/system/etc/prop.default
++/system/system/build.prop
++/system_ext/etc/prop.default
++/system_ext/etc/build.prop
++/system_ext/build.prop
++/system_dlkm/etc/build.prop
++/system_dlkm/build.prop
++/vendor/default.prop
++/vendor/etc/prop.default
++/vendor/etc/build.prop
++/vendor/build.prop
++/vendor_dlkm/build.prop
++/vendor_dlkm/etc/build.prop
++/odm_dlkm/build.prop
++/odm_dlkm/etc/build.prop
++/product/etc/prop.default
++/product/etc/build.prop
++/product/build.prop
++/odm/default.prop
++/odm/etc/prop.default
++/odm/etc/build.prop
++/odm/build.prop
++/factory/factory.prop
++"
++    readable_property_files=""
++    for property_file in $property_files; do
++        [ -r "$property_file" ] && readable_property_files="$readable_property_files $property_file"
++    done
++
++    detected_tmp="$BASELINE_FILE.detect.$$"
++    : > "$detected_tmp" || return 1
++    if [ -n "$readable_property_files" ]; then
++        awk '
++            function target(key) {
++                return key == "persist.bluetooth.bluetooth_audio_hal.disabled" \
++                    || key == "persist.bluetooth.a2dp_offload.disabled" \
++                    || key == "persist.bluetooth.system_audio_hal.enabled" \
++                    || key == "ro.bluetooth.a2dp_offload.supported"
++            }
++            /^[[:space:]]*#/ { next }
++            {
++                line = $0
++                sub(/\r$/, "", line)
++                separator = index(line, "=")
++                if (separator == 0) next
++                key = substr(line, 1, separator - 1)
++                gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
++                if (!target(key)) next
++                value = substr(line, separator + 1)
++                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
++                if (value == "true" || value == "false" || value == "0" || value == "1") found[key] = value
++            }
++            END { for (key in found) print key "=" found[key] }
++        ' $readable_property_files >> "$detected_tmp" || return 1
++    fi
++
++    init_roots="
++/system/etc/init
++/system/system/etc/init
++/system_ext/etc/init
++/system_dlkm/etc/init
++/vendor/etc/init
++/vendor_dlkm/etc/init
++/odm_dlkm/etc/init
++/product/etc/init
++/odm/etc/init
++"
++    init_files=""
++    for init_root in $init_roots; do
++        [ -d "$init_root" ] || continue
++        init_files="$init_files `find "$init_root" -type f -name '*.rc' 2>"/dev/null" | sort`"
++    done
++    if [ -n "$init_files" ]; then
++        awk '
++            function target(key) {
++                return key == "persist.bluetooth.bluetooth_audio_hal.disabled" \
++                    || key == "persist.bluetooth.a2dp_offload.disabled" \
++                    || key == "persist.bluetooth.system_audio_hal.enabled" \
++                    || key == "ro.bluetooth.a2dp_offload.supported"
++            }
++            /^[[:space:]]*#/ { next }
++            {
++                line = $0
++                sub(/\r$/, "", line)
++                sub(/^[[:space:]]+/, "", line)
++                count = split(line, fields, /[[:space:]]+/)
++                if (count < 3 || fields[1] != "setprop" || !target(fields[2])) next
++                value = fields[3]
++                gsub(/^['\''"]|['\''"]$/, "", value)
++                if (value == "true" || value == "false" || value == "0" || value == "1") found[fields[2]] = value
++            }
++            END { for (key in found) print key "=" found[key] }
++        ' $init_files >> "$detected_tmp" || return 1
++    fi
++}
++
++function write_baseline_entry()
++{
++    detected_value="`awk -F= -v property_name="$2" '$1 == property_name { value = $2 } END { print value }' "$detected_tmp"`"
++    if valid_boolean_value "$detected_value"; then
++        echo "${1}_present=1" >> "$baseline_tmp"
++        echo "${1}_value=$detected_value" >> "$baseline_tmp"
++    else
++        echo "${1}_present=0" >> "$baseline_tmp"
++        echo "${1}_value=" >> "$baseline_tmp"
++    fi
++}
++
++function ensure_baseline()
++{
++    if [ -f "$BASELINE_FILE" ] && [ ! -L "$BASELINE_FILE" ]; then
++        load_baseline || {
++            echo "${0##*/} cannot use Bluetooth HAL baseline; invalid file" 1>&2
++            return 1
++        }
++        return 0
++    fi
++    if [ -e "$BASELINE_FILE" ] || [ -L "$BASELINE_FILE" ]; then
++        echo "${0##*/} cannot create Bluetooth HAL baseline; unsafe path" 1>&2
++        return 1
++    fi
++    mkdir -p "$STATE_ROOT" || return 1
++    chmod 0700 "$STATE_ROOT" 2>"/dev/null"
++    baseline_tmp="$BASELINE_FILE.tmp.$$"
++    rm -f "$baseline_tmp"
++    umask 077
++    echo "version=1" > "$baseline_tmp" || return 1
++    detect_rom_properties || {
++        rm -f "$baseline_tmp" "$detected_tmp"
++        return 1
++    }
++    write_baseline_entry "persist_bluetooth_bluetooth_audio_hal_disabled" "persist.bluetooth.bluetooth_audio_hal.disabled" \
++        && write_baseline_entry "persist_bluetooth_a2dp_offload_disabled" "persist.bluetooth.a2dp_offload.disabled" \
++        && write_baseline_entry "persist_bluetooth_system_audio_hal_enabled" "persist.bluetooth.system_audio_hal.enabled" \
++        && write_baseline_entry "ro_bluetooth_a2dp_offload_supported" "ro.bluetooth.a2dp_offload.supported" \
++        || {
++            rm -f "$baseline_tmp" "$detected_tmp"
++            return 1
++        }
++    rm -f "$detected_tmp"
++    mv -f "$baseline_tmp" "$BASELINE_FILE" || {
++        rm -f "$baseline_tmp"
++        return 1
++    }
++}
++
++function load_baseline()
++{
++    baseline_version=""
++    persist_bluetooth_bluetooth_audio_hal_disabled_present=""
++    persist_bluetooth_bluetooth_audio_hal_disabled_value=""
++    persist_bluetooth_a2dp_offload_disabled_present=""
++    persist_bluetooth_a2dp_offload_disabled_value=""
++    persist_bluetooth_system_audio_hal_enabled_present=""
++    persist_bluetooth_system_audio_hal_enabled_value=""
++    ro_bluetooth_a2dp_offload_supported_present=""
++    ro_bluetooth_a2dp_offload_supported_value=""
++    while IFS= read -r baseline_line || [ -n "$baseline_line" ]; do
++        baseline_key="${baseline_line%%=*}"
++        baseline_value="${baseline_line#*=}"
++        case "$baseline_key" in
++            version) baseline_version="$baseline_value" ;;
++            persist_bluetooth_bluetooth_audio_hal_disabled_present) persist_bluetooth_bluetooth_audio_hal_disabled_present="$baseline_value" ;;
++            persist_bluetooth_bluetooth_audio_hal_disabled_value) persist_bluetooth_bluetooth_audio_hal_disabled_value="$baseline_value" ;;
++            persist_bluetooth_a2dp_offload_disabled_present) persist_bluetooth_a2dp_offload_disabled_present="$baseline_value" ;;
++            persist_bluetooth_a2dp_offload_disabled_value) persist_bluetooth_a2dp_offload_disabled_value="$baseline_value" ;;
++            persist_bluetooth_system_audio_hal_enabled_present) persist_bluetooth_system_audio_hal_enabled_present="$baseline_value" ;;
++            persist_bluetooth_system_audio_hal_enabled_value) persist_bluetooth_system_audio_hal_enabled_value="$baseline_value" ;;
++            ro_bluetooth_a2dp_offload_supported_present) ro_bluetooth_a2dp_offload_supported_present="$baseline_value" ;;
++            ro_bluetooth_a2dp_offload_supported_value) ro_bluetooth_a2dp_offload_supported_value="$baseline_value" ;;
++        esac
++    done < "$BASELINE_FILE"
++    [ "$baseline_version" = 1 ] || return 1
++    for baseline_present in \
++        "$persist_bluetooth_bluetooth_audio_hal_disabled_present" \
++        "$persist_bluetooth_a2dp_offload_disabled_present" \
++        "$persist_bluetooth_system_audio_hal_enabled_present" \
++        "$ro_bluetooth_a2dp_offload_supported_present"; do
++        case "$baseline_present" in 0 | 1) ;; *) return 1 ;; esac
++    done
++    [ "$persist_bluetooth_bluetooth_audio_hal_disabled_present" = 0 ] || valid_boolean_value "$persist_bluetooth_bluetooth_audio_hal_disabled_value" || return 1
++    [ "$persist_bluetooth_a2dp_offload_disabled_present" = 0 ] || valid_boolean_value "$persist_bluetooth_a2dp_offload_disabled_value" || return 1
++    [ "$persist_bluetooth_system_audio_hal_enabled_present" = 0 ] || valid_boolean_value "$persist_bluetooth_system_audio_hal_enabled_value" || return 1
++    [ "$ro_bluetooth_a2dp_offload_supported_present" = 0 ] || valid_boolean_value "$ro_bluetooth_a2dp_offload_supported_value" || return 1
++}
++
++function restore_persist_property()
++{
++    if [ "$2" = 1 ]; then
++        setprop "$1" "$3"
++    else
++        if [ "$resetprop_command" != "resetprop" ]; then
++            echo "${0##*/} cannot delete persistent property $1 with $resetprop_command" 1>&2
++            return 1
++        fi
++        "$resetprop_command" -p --delete "$1" 1>"/dev/null" 2>&1 && return 0
++        "$resetprop_command" -P "$1" 1>"/dev/null" 2>&1 && return 1
++        "$resetprop_command" "$1" 1>"/dev/null" 2>&1 && return 1
++        return 0
++    fi
++}
++
++function restore_readonly_property()
++{
++    if [ "$2" = 1 ]; then
++        "$resetprop_command" "$1" "$3"
++    else
++        "$resetprop_command" --delete "$1" 1>"/dev/null" 2>&1 && return 0
++        "$resetprop_command" "$1" 1>"/dev/null" 2>&1 && return 1
++        return 0
++    fi
++}
++
++function restore_baseline()
++{
++    load_baseline || {
++        echo "${0##*/} cannot reset Bluetooth HAL; invalid baseline" 1>&2
++        return 1
++    }
++    restore_failed=0
++    restore_persist_property "persist.bluetooth.bluetooth_audio_hal.disabled" "$persist_bluetooth_bluetooth_audio_hal_disabled_present" "$persist_bluetooth_bluetooth_audio_hal_disabled_value" || restore_failed=1
++    restore_persist_property "persist.bluetooth.a2dp_offload.disabled" "$persist_bluetooth_a2dp_offload_disabled_present" "$persist_bluetooth_a2dp_offload_disabled_value" || restore_failed=1
++    restore_persist_property "persist.bluetooth.system_audio_hal.enabled" "$persist_bluetooth_system_audio_hal_enabled_present" "$persist_bluetooth_system_audio_hal_enabled_value" || restore_failed=1
++    restore_readonly_property "ro.bluetooth.a2dp_offload.supported" "$ro_bluetooth_a2dp_offload_supported_present" "$ro_bluetooth_a2dp_offload_supported_value" || restore_failed=1
++    if [ "$restore_failed" -ne 0 ]; then
++        echo "${0##*/} cannot reset one or more Bluetooth HAL properties" 1>&2
++        return 1
++    fi
++    rm -f "$BASELINE_FILE"
+ }
+ 
+ function which_resetprop_command()
+@@ -77,6 +325,9 @@ if [ $# -eq 1 ]; then
+         "aosp" | "legacy" | "offload" | "sysbta" )
+             BTmode="$1"
+             ;;
++        "--reset" )
++            BTmode="reset"
++            ;;
+         "-s" | "--status" )
+             BluetoothHalStatus
+             exit 0
+@@ -101,6 +352,17 @@ if [ -z "$resetprop_command" ]; then
+     exit 1
+ fi
+ 
++ensure_baseline || {
++    echo "${0##*/} cannot create Bluetooth HAL baseline" 1>&2
++    exit 1
++}
++
++if [ "$BTmode" = "reset" ]; then
++    restore_baseline || exit 1
++    BluetoothHalStatus
++    exit 0
++fi
++
+ if [ -n "`getprop persist.bluetooth.system_audio_hal.enabled`" ]; then
+     if [ "$BTmode" = "sysbta" ]; then
+         setprop persist.bluetooth.bluetooth_audio_hal.disabled false
+diff --git a/extras/reload-audio-servers.sh b/extras/reload-audio-servers.sh
+index b2652d8..989edd3 100755
+--- a/extras/reload-audio-servers.sh
++++ b/extras/reload-audio-servers.sh
+@@ -6,7 +6,7 @@ while [ $# -gt 0 ]; do
+         --bluetooth-hal)
+             shift
+             case "${1:-}" in
+-                aosp | legacy | offload | sysbta)
++                aosp | legacy | offload | sysbta | reset)
+                     bluetooth_mode="$1"
+                     shift
+                     ;;
+@@ -66,6 +66,13 @@ if [ -n "$bluetooth_mode" ]; then
+         exit 1
+     fi
+ 
++    if [ "$bluetooth_mode" = "reset" ]; then
++        case "`getprop persist.bluetooth.system_audio_hal.enabled`" in
++            1 | true) bluetooth_mode="sysbta" ;;
++            *) bluetooth_mode="offload" ;;
++        esac
++    fi
++
+     if [ "$bluetooth_mode" = "sysbta" ]; then
+         for service_name in $AudioHALs "system.bt-audio-hal"; do
+             if [ "`getprop init.svc.${service_name}`" = "stopped" ]; then

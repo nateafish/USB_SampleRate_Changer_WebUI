@@ -50,6 +50,18 @@ const dynamicSchema: ControllerSchema = {
 };
 
 describe("schema model", () => {
+  it("retains Direct PCM dynamic in fallback and controller-driven menus", async () => {
+    const model = createSchemaModel({ schema: vi.fn().mockResolvedValue({
+      result: { code: 0, stdout: "{}", stderr: "" },
+      schema: { ...dynamicSchema, policy: { default: "auto", options: [
+        { value: "offload-direct", labelKey: "policy.option.offload-direct.label" },
+        { value: "offload-direct-dynamic", labelKey: "policy.option.offload-direct-dynamic.label" }
+      ] } }
+    }) });
+    expect(model.policyOptions().map(({ value }) => value)).toContain("offload-direct-dynamic");
+    await model.load();
+    expect(model.policyOptions().map(({ value }) => value)).toEqual(["offload-direct", "offload-direct-dynamic"]);
+  });
   it("keeps complete static fallbacks until a valid contract is loaded", async () => {
     const model = createSchemaModel({
       schema: vi.fn().mockResolvedValue({ result: { code: 0, stdout: "", stderr: "" } })
@@ -59,6 +71,8 @@ describe("schema model", () => {
     expect(model.toolAvailable("bluetoothHal")).toBe(true);
     expect(model.toolOperation("resampler", "reset")).toBe(true);
     expect(model.diagnosticsCompleteOutput()).toBe(true);
+    expect([...model.jitterResetFeatures()]).toContain("battery");
+    expect([...model.jitterResetFeatures()]).toContain("effect");
     await model.load();
     expect(model.policyOptions().length).toBeGreaterThan(1);
   });

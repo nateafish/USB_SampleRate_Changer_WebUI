@@ -1,9 +1,11 @@
 mod aidl;
 mod aidl_backend;
 mod android;
+mod audioserver_priority;
 mod catalog;
 mod cli;
 mod domain;
+mod dynamic_direct;
 mod operation;
 mod paths;
 mod process;
@@ -18,8 +20,8 @@ use cli::ControllerCommand;
 use domain::{Action, Settings};
 use operation::{
     acquire_operation_lock, finish_internal_mutation, load_state_preflight,
-    render_operation_contract, run_extra, run_operation, run_reapply_batch_locked, OperationKind,
-    OperationResult, OperationState,
+    render_operation_contract, run_cleanup, run_extra, run_operation, run_reapply_batch_locked,
+    OperationKind, OperationResult, OperationState,
 };
 use paths::{ensure_state_layout, module_dir};
 use protocol::{print_generated, print_logs, print_schema, print_schema_json, print_status};
@@ -61,6 +63,28 @@ fn restore_default_sigpipe() {
 fn restore_default_sigpipe() {}
 
 fn run(args: &[String]) -> Result<i32, String> {
+    // Internal entry point runs under the outer controller's lock and mount
+    // namespace guard. It must not acquire that lock recursively.
+    if args.get(1).map(String::as_str) == Some("_dynamic-direct") {
+        let settings = cli::parse_settings_args(&args[2..])?;
+        dynamic_direct::apply(&settings, &module_dir()?)?;
+        return Ok(0);
+    }
+    match args.get(1).map(String::as_str) {
+        Some("_audioserver-priority-watch") if args.len() == 2 => {
+            audioserver_priority::watch_loop()?;
+            return Ok(0);
+        }
+        Some("_audioserver-priority-start") if args.len() == 2 => {
+            audioserver_priority::start_watch()?;
+            return Ok(0);
+        }
+        Some("_audioserver-priority-stop") if args.len() == 2 => {
+            audioserver_priority::stop_watch()?;
+            return Ok(0);
+        }
+        _ => {}
+    }
     match cli::parse(args)? {
         ControllerCommand::Schema { json } => {
             let module_dir = module_dir()?;
@@ -119,10 +143,49 @@ fn run(args: &[String]) -> Result<i32, String> {
         }
         ControllerCommand::Apply(settings) => run_operation(settings, Action::Apply),
         ControllerCommand::Reset => run_operation(Settings::default(), Action::Reset),
+        ControllerCommand::Cleanup => run_cleanup(),
         ControllerCommand::Extra(action) => run_extra(action),
         ControllerCommand::SetAutoReapply(enabled) => run_settings_command(enabled),
+        ControllerCommand::SetAudioserverPriority(enabled) => {
+            run_audioserver_priority_setting(enabled)
+        }
         ControllerCommand::Reapply => run_reapply(),
     }
+}
+
+fn run_audioserver_priority_setting(enabled: bool) -> Result<i32, String> {
+    ensure_state_layout()?;
+    let (code, change) = {
+        // The feature owns a separate marker and baseline, so it remains
+        // possible to disable it even when settings.conf is degraded.
+        let _lock = acquire_operation_lock()?;
+        let change = audioserver_priority::set_enabled(enabled)?;
+        let code = finish_internal_mutation(
+            "settings-audioserver-priority",
+            format!(
+                "usbsrctl settings audioserver-priority {}",
+                if enabled { "enable" } else { "disable" }
+            ),
+        )?;
+        (code, change)
+    };
+
+    let monitor_result = if enabled {
+        audioserver_priority::start_watch()
+    } else {
+        audioserver_priority::stop_watch()
+    };
+    if let Err(error) = monitor_result {
+        eprintln!("WARNING: audioserver priority monitor update failed: {error}");
+    }
+    println!("audioserver_priority={}", bool_number(enabled));
+    println!(
+        "audioserver_priority_target={}",
+        audioserver_priority::TARGET_NICE
+    );
+    println!("audioserver_priority_adjusted={}", change.adjusted);
+    println!("audioserver_priority_restored={}", change.restored);
+    Ok(code)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,7 +196,7 @@ pub(crate) struct OperationPreflight {
 
 pub(crate) fn operation_preflight(args: &[String]) -> Option<OperationPreflight> {
     match args.get(1).map(String::as_str) {
-        Some("apply" | "reset" | "reapply") => Some(OperationPreflight {
+        Some("apply" | "reset" | "cleanup" | "reapply") => Some(OperationPreflight {
             action: args[1].clone(),
             kind: OperationKind::Mutation,
         }),
@@ -147,6 +210,7 @@ pub(crate) fn operation_preflight(args: &[String]) -> Option<OperationPreflight>
                 args.get(3).map(String::as_str),
             ) {
                 (Some("auto-reapply"), _) => "settings-auto-reapply".to_string(),
+                (Some("audioserver-priority"), _) => "settings-audioserver-priority".to_string(),
                 _ => "settings".to_string(),
             },
             kind: OperationKind::Mutation,

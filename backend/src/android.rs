@@ -10,6 +10,8 @@ const ANDROID_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
 const PID_QUERY_TIMEOUT: Duration = Duration::from_secs(1);
 const DUMPSYS_OUTPUT_LIMIT: usize = 2 * 1024 * 1024;
 const SMALL_QUERY_OUTPUT_LIMIT: usize = 4 * 1024;
+const BLUETOOTH_MEDIA_DEVICES: &[&str] =
+    &["bt_a2dp", "ble_headset", "ble_speaker", "ble_broadcast"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum A2dpState {
@@ -52,7 +54,10 @@ pub(crate) fn bluetooth_a2dp_connected_in_dump(dump: &str) -> bool {
         .split_once("APM Connected device")
         .map(|(section, _)| section)
         .unwrap_or(connected_and_rest);
-    if !connected.contains("(bt_a2dp)") {
+    if !BLUETOOTH_MEDIA_DEVICES
+        .iter()
+        .any(|device| connected.contains(&format!("({device})")))
+    {
         return false;
     }
 
@@ -65,7 +70,12 @@ pub(crate) fn bluetooth_a2dp_connected_in_dump(dump: &str) -> bool {
         .unwrap_or(music_and_rest);
     music
         .lines()
-        .any(|line| line.trim_start().starts_with("Devices:") && line.contains("bt_a2dp"))
+        .filter(|line| line.trim_start().starts_with("Devices:"))
+        .any(|line| {
+            BLUETOOTH_MEDIA_DEVICES
+                .iter()
+                .any(|device| line.contains(device))
+        })
 }
 
 fn wait_for_bluetooth_a2dp(attempts: usize, delay: Duration) -> A2dpState {
@@ -83,16 +93,17 @@ fn wait_for_bluetooth_a2dp(attempts: usize, delay: Duration) -> A2dpState {
 
 pub(crate) fn verify_a2dp_route() -> Result<&'static str, String> {
     // AudioService can retain the old device list briefly after audioserver has
-    // restarted. Let the new policy instance settle before deciding that A2DP
-    // recovered without intervention.
+    // restarted. Let the new policy instance settle before deciding that the
+    // Bluetooth media route recovered without intervention.
     std::thread::sleep(Duration::from_secs(3));
     match wait_for_bluetooth_a2dp(8, Duration::from_millis(500)) {
         A2dpState::Connected => Ok("verified"),
         A2dpState::Unknown => Err(
-            "audio policy was applied, but A2DP route verification was unavailable".to_string(),
+            "audio policy was applied, but Bluetooth media route verification was unavailable"
+                .to_string(),
         ),
         A2dpState::Disconnected => Err(
-            "audio policy was applied, but the connected headset must be explicitly disconnected and reconnected before STREAM_MUSIC returns to A2DP"
+            "audio policy was applied, but the connected headset must be explicitly disconnected and reconnected before STREAM_MUSIC returns to Bluetooth media"
                 .to_string(),
         ),
     }
@@ -102,6 +113,7 @@ pub(crate) fn namespace_info() -> NamespaceInfo {
     let audio_pid = audioserver_pid();
     NamespaceInfo {
         self_ns: read_namespace_link(Path::new("/proc/self/ns/mnt")),
+        init_ns: read_namespace_link(Path::new("/proc/1/ns/mnt")),
         audio_ns: audio_pid
             .and_then(|pid| read_namespace_link(Path::new(&format!("/proc/{pid}/ns/mnt")))),
         audio_pid,

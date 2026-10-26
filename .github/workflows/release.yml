@@ -29,6 +29,8 @@ jobs:
           targets: aarch64-linux-android
 
       - uses: android-actions/setup-android@v3
+        with:
+          packages: ''
 
       - name: Install Android NDK
         run: sdkmanager "ndk;28.2.13676358"

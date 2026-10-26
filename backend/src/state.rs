@@ -714,6 +714,12 @@ pub(crate) fn update_stored_settings_for_extra(
     action: &ExtraAction,
 ) -> bool {
     match action {
+        ExtraAction::BluetoothHal { action } if action == "reset" => {
+            let defaults = StoredSettings::default();
+            settings.bluetooth_hal = defaults.bluetooth_hal;
+            settings.bluetooth_hal_configured = false;
+            true
+        }
         ExtraAction::BluetoothHal { action } if action != "status" => {
             settings.bluetooth_hal = action.clone();
             settings.bluetooth_hal_configured = true;
@@ -773,7 +779,12 @@ pub(crate) fn update_stored_settings_for_extra(
             wifi_no_restart,
         } => {
             if feature == "all" {
-                for feature in JITTER_BASE_FEATURES {
+                let features = if *enabled {
+                    JITTER_BASE_FEATURES
+                } else {
+                    JITTER_FEATURES
+                };
+                for feature in features {
                     settings
                         .jitter_values
                         .insert((*feature).to_string(), *enabled);

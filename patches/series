@@ -5,3 +5,5 @@
 # Controller-owned audio restart: disable upstream restart hooks and add the
 # single canonical restart entry point used by the Backend.
 0004-controller-owns-audio-restart.patch
+0005-add-dynamic-device-policy-templates.patch
+0006-restore-original-bluetooth-hal-properties.patch

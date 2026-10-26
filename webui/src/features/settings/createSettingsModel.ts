@@ -3,27 +3,33 @@ import type { Language } from "../../i18n";
 import { translate } from "../../i18n";
 import type { ConfirmService, NotificationCenter, OperationCoordinator } from "../../application";
 import type { DeviceStatus } from "../../domain/device-status";
+import type { ExecResult } from "../../domain/models";
 import {
   controllerExecutionError,
   type OperationAwareExecResult
 } from "../../platform/controller-errors";
-import type { Translator } from "../../shared/types";
+import { LocalizedError, type Translator } from "../../shared/types";
 
 export type LocalizedOption = readonly [string, string];
 
 export type SettingsController = {
   setAutoReapply(enabled: boolean): Promise<OperationAwareExecResult>;
+  setAudioserverPriority(enabled: boolean): Promise<OperationAwareExecResult>;
+  openProjectPage(): Promise<ExecResult>;
 };
 
 export type SettingsPageModel = {
   language: Accessor<Language>;
   pendingLanguage: Accessor<Language>;
   autoReapply: Accessor<boolean>;
+  audioserverPriority: Accessor<boolean>;
   tx: Translator;
   localizeOptions: (options: ReadonlyArray<LocalizedOption>) => ReadonlyArray<LocalizedOption>;
   setPendingLanguage: (value: Language) => void;
   applyLanguage: () => void;
   changeAutoReapply: (value: boolean) => Promise<void>;
+  changeAudioserverPriority: (value: boolean) => Promise<void>;
+  openProjectPage: () => Promise<void>;
   hydrate: (status: DeviceStatus) => void;
 };
 
@@ -55,6 +61,7 @@ export function createSettingsModel(options: SettingsModelOptions): SettingsPage
   const [language, setLanguage] = createSignal<Language>(initialLanguage);
   const [pendingLanguage, setPendingLanguage] = createSignal<Language>(initialLanguage);
   const [autoReapply, setAutoReapply] = createSignal(false);
+  const [audioserverPriority, setAudioserverPriority] = createSignal(false);
 
   createEffect(() => {
     documentElement.lang = language();
@@ -96,19 +103,53 @@ export function createSettingsModel(options: SettingsModelOptions): SettingsPage
     });
   }
 
+  async function changeAudioserverPriority(value: boolean): Promise<void> {
+    await options.operations.runExclusive("settings.audioserver-priority", async () => {
+      try {
+        const result = await options.controller.setAudioserverPriority(value);
+        if (result.code !== 0) {
+          throw controllerExecutionError(result, "settings.audioserverPriority.saveFailed");
+        }
+        setAudioserverPriority(value);
+        options.notifications.success(value
+          ? "settings.audioserverPriority.enabled"
+          : "settings.audioserverPriority.disabled");
+      } catch (error) {
+        options.notifications.error(error);
+      }
+    });
+  }
+
+  async function openProjectPage(): Promise<void> {
+    await options.operations.runExclusive("settings.open-project", async () => {
+      try {
+        const result = await options.controller.openProjectPage();
+        if (result.code !== 0) {
+          throw new LocalizedError("settings.about.openFailed");
+        }
+      } catch (error) {
+        options.notifications.error(error);
+      }
+    });
+  }
+
   function hydrate(status: DeviceStatus) {
     setAutoReapply(status.autoReapply);
+    setAudioserverPriority(status.audioserverPriority);
   }
 
   return {
     language,
     pendingLanguage,
     autoReapply,
+    audioserverPriority,
     tx,
     localizeOptions,
     setPendingLanguage,
     applyLanguage,
     changeAutoReapply,
+    changeAudioserverPriority,
+    openProjectPage,
     hydrate
   };
 }

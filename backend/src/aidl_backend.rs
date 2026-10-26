@@ -27,9 +27,10 @@ use crate::operation::{
 use crate::paths::{atomic_write, ensure_state_layout, state_root};
 use crate::scripts::{shell_quote, validate_settings_for_action};
 use crate::state::bool_number;
+use crate::state::StateStore;
 
 const AIDL_TIMEOUT: Duration = Duration::from_secs(60);
-const AIDL_RESTART_TIMEOUT: Duration = Duration::from_secs(25);
+const AIDL_RESTART_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug)]
 pub(crate) struct AidlConfigSource {
@@ -48,10 +49,15 @@ pub(crate) fn active_is_aidl() -> bool {
 }
 
 pub(crate) fn audio_policy_snapshot() -> Result<AudioPolicySnapshot, String> {
-    let output = Command::new("dumpsys")
-        .arg("media.audio_policy")
-        .output()
-        .map_err(|error| format!("cannot run media.audio_policy dump: {error}"))?;
+    let mut command = Command::new("dumpsys");
+    command.arg("media.audio_policy");
+    let result =
+        crate::process::execute_output(&mut command, Duration::from_secs(5), 4 * 1024 * 1024)
+            .map_err(|error| format!("cannot run media.audio_policy dump: {error}"))?;
+    if result.timed_out || result.stdout_truncated {
+        return Err("media.audio_policy dump was incomplete".to_string());
+    }
+    let output = result.output;
     if !output.status.success() {
         return Err(format!(
             "media.audio_policy dump failed with status {}",
@@ -720,14 +726,25 @@ fn path_is_mounted(target: &Path) -> bool {
 }
 
 fn set_config_context(candidate: &Path, target: &Path) -> Result<(), String> {
-    // Copying the target's label is portable across ODM/vendor policy types.
-    let reference = Command::new("chcon")
-        .args(["--reference"])
-        .arg(target)
-        .arg(candidate)
-        .status();
-    if reference.is_ok_and(|status| status.success()) {
-        return Ok(());
+    // Android's toybox chcon has no --reference option. Read the target's
+    // exact label rather than assuming that ODM and vendor use the same type.
+    let reference = Command::new("ls").arg("-Zd").arg(target).output();
+    if let Ok(reference) = reference {
+        if reference.status.success() {
+            if let Some(context) = String::from_utf8_lossy(&reference.stdout)
+                .split_whitespace()
+                .find(|value| value.starts_with("u:object_r:") && value.contains(":s0"))
+            {
+                if Command::new("chcon")
+                    .arg(context)
+                    .arg(candidate)
+                    .status()
+                    .is_ok_and(|status| status.success())
+                {
+                    return Ok(());
+                }
+            }
+        }
     }
     // Older toolbox versions do not implement --reference; retain the
     // historical labels as a narrowly scoped fallback.
@@ -773,6 +790,11 @@ old_services="$(core_service_count)"
 case "$old_services" in ''|*[!0-9]*) old_services=0;; esac
 if [ -z "$old_hal" ] || [ -z "$old_audio" ] || [ "$old_services" -lt 1 ]; then
     echo "AIDL audio service baseline is incomplete" >&2
+    exit 30
+fi
+mount_ns="$(readlink /proc/self/ns/mnt)"
+if [ -z "$mount_ns" ] || [ "$mount_ns" != "$(readlink /proc/1/ns/mnt)" ] || [ "$mount_ns" != "$(readlink /proc/$old_hal/ns/mnt)" ] || [ "$mount_ns" != "$(readlink /proc/$old_audio/ns/mnt)" ]; then
+    echo "AIDL HAL, audioserver and writer must share the global mount namespace" >&2
     exit 30
 fi
 "#,
@@ -851,6 +873,10 @@ pub(crate) fn run_operation(settings: Settings, action: Action) -> Result<i32, S
     fs::create_dir_all(aidl_state_dir())
         .map_err(|error| format!("cannot create AIDL state directory: {error}"))?;
     let lock = acquire_operation_lock()?;
+    crate::operation::load_state_preflight(&StateStore::new(), matches!(action, Action::Reset))?;
+    if matches!(action, Action::Apply) {
+        validate_aidl_settings(&settings)?;
+    }
     let namespace = namespace_info();
     let (route, command_route) = script_runner(&namespace);
     let a2dp_state = Some(bluetooth_a2dp_state());
@@ -866,6 +892,21 @@ pub(crate) fn run_operation(settings: Settings, action: Action) -> Result<i32, S
         ),
         Action::Reset => run_reset(&lock, &namespace, route, &command_route, a2dp_state),
     }
+}
+
+fn validate_aidl_settings(settings: &Settings) -> Result<(), String> {
+    if settings.drc
+        || settings.force_usbv2
+        || settings.force_bluetooth_qti
+        || settings.amzm
+        || settings.test
+        || settings.test_template.is_some()
+    {
+        return Err(
+            "traditional XML template switches are unavailable for AIDL module XML".to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn run_apply(
@@ -906,7 +947,15 @@ fn run_apply(
                 "an existing AIDL mount targets a different configuration source".to_string(),
             );
         }
-        if let Ok(original) = fs::read(aidl_original_path()) {
+        {
+            let original = fs::read(aidl_original_path())
+                .map_err(|error| format!("cannot read saved AIDL baseline: {error}"))?;
+            if !source_is_mounted && source.xml.as_bytes() != original {
+                return Err(
+                    "AIDL source changed after configuration; revalidate after the system update"
+                        .to_string(),
+                );
+            }
             source.xml = String::from_utf8(original)
                 .map_err(|_| "saved AIDL source is not valid UTF-8".to_string())?;
             source.model = aidl::parse_module_xml(&source.xml)?;
@@ -1005,8 +1054,17 @@ fn run_reset(
     command_route: &str,
     a2dp_state: Option<A2dpState>,
 ) -> Result<i32, String> {
-    let (target, service) = read_aidl_metadata()
-        .map_err(|_| "no controller-managed AIDL policy is currently configured".to_string())?;
+    let (target, service) = match read_aidl_metadata() {
+        Ok(metadata) => metadata,
+        Err(_) if !aidl_metadata_path().exists() => {
+            crate::state::reset_policy_settings()?;
+            return crate::operation::finish_internal_mutation(
+                "reset",
+                "AIDL policy is already at its system default".to_string(),
+            );
+        }
+        Err(error) => return Err(error),
+    };
     let original = fs::read(aidl_original_path())
         .map_err(|error| format!("cannot read saved AIDL source: {error}"))?;
     if !path_is_mounted(&target) {
@@ -1058,7 +1116,7 @@ fn validate_loaded_aidl_plan(
         let module = snapshot
             .modules
             .iter()
-            .find(|module| module.name == target.module || module.name == "primary")
+            .find(|module| module.name == target.module)
             .ok_or_else(|| format!("loaded module {} is missing", target.module))?;
         let port = module
             .output_mix_ports
@@ -1076,11 +1134,7 @@ fn validate_loaded_aidl_plan(
             profile.rates.contains(&target.rate)
                 && profile.format.as_deref() == Some(expected_format)
         });
-        let remains_dynamic = target.dynamic_source
-            && port.profiles.iter().any(|profile| {
-                profile.dynamic_rate || profile.dynamic_format || profile.dynamic_channels
-            });
-        if !matches_static && !remains_dynamic {
+        if !matches_static {
             return Err(format!(
                 "loaded mix port {} does not expose {} at {} Hz",
                 target.port, expected_format, target.rate
@@ -1097,8 +1151,7 @@ fn append_execution_output(target: &mut Output, source: &Output) {
 
 pub(crate) fn restore() -> Result<i32, String> {
     ensure_state_layout()?;
-    let lock = acquire_operation_lock()?;
-    let (target, service) = match read_aidl_metadata() {
+    let (target, _) = match read_aidl_metadata() {
         Ok(value) => value,
         Err(_) => {
             println!("aidl_restore=not-configured");
@@ -1109,26 +1162,83 @@ pub(crate) fn restore() -> Result<i32, String> {
         println!("aidl_restore=already-mounted");
         return Ok(0);
     }
-    let candidate = aidl_candidate_path();
-    if !candidate.is_file() {
-        return Err("AIDL candidate file is missing".to_string());
+    let stored = crate::operation::load_state_preflight(&StateStore::new(), false)?.settings;
+    if !stored.policy_configured {
+        return Err("AIDL restore requires a successfully saved policy".to_string());
     }
-    set_config_context(&candidate, &target)?;
-    let generated = render_aidl_reload_script(&target, Some(&candidate), &service);
-    let namespace = namespace_info();
-    let (route, command_route) = script_runner(&namespace);
-    let execution = execute_script_locked(&generated, &namespace, AIDL_TIMEOUT, &lock)?;
-    println!(
-        "aidl_restore={}",
-        if execution.output.status.success() {
-            "applied"
-        } else {
-            "failed"
+    run_operation(stored.policy, Action::Apply)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::aidl::{AudioPort, AudioProfile, PortPlan};
+
+    fn expected_plan() -> PolicyPlan {
+        PolicyPlan {
+            policy: "offload-direct".to_string(),
+            targets: vec![PortPlan {
+                module: "primary".to_string(),
+                port: "direct".to_string(),
+                behavior: "direct-pcm",
+                rate: 96_000,
+                pcm_type: "INT_32_BIT".to_string(),
+                dynamic_source: true,
+            }],
+            skipped: vec![],
         }
-    );
-    println!("aidl_restore_route={route}");
-    println!("aidl_restore_command={command_route}");
-    print!("{}", String::from_utf8_lossy(&execution.output.stdout));
-    eprint!("{}", String::from_utf8_lossy(&execution.output.stderr));
-    Ok(execution.output.status.code().unwrap_or(1))
+    }
+
+    #[test]
+    fn post_restart_requires_requested_rate_and_format_even_for_dynamic_ports() {
+        let mut snapshot = AudioPolicySnapshot {
+            config_source: "AIDL HAL".to_string(),
+            modules: vec![AudioModule {
+                name: "primary".to_string(),
+                output_mix_ports: vec![AudioPort {
+                    name: "direct".to_string(),
+                    profiles: vec![AudioProfile {
+                        dynamic_rate: true,
+                        dynamic_format: true,
+                        ..AudioProfile::default()
+                    }],
+                    ..AudioPort::default()
+                }],
+                ..AudioModule::default()
+            }],
+        };
+        let plan = expected_plan();
+        assert!(validate_loaded_aidl_plan(&snapshot, &plan).is_err());
+        snapshot.modules[0].output_mix_ports[0].profiles[0] = AudioProfile {
+            format: Some("AUDIO_FORMAT_PCM_32_BIT".to_string()),
+            rates: vec![96_000],
+            ..AudioProfile::default()
+        };
+        assert!(validate_loaded_aidl_plan(&snapshot, &plan).is_ok());
+        snapshot.modules[0].output_mix_ports[0].profiles[0].rates = vec![48_000];
+        assert!(validate_loaded_aidl_plan(&snapshot, &plan).is_err());
+        snapshot.modules[0].output_mix_ports[0].profiles[0].rates = vec![96_000];
+        snapshot.modules[0].name = "usb".to_string();
+        assert!(validate_loaded_aidl_plan(&snapshot, &plan).is_err());
+    }
+
+    #[test]
+    fn unsupported_template_switches_are_not_silently_ignored() {
+        assert!(validate_aidl_settings(&Settings::default()).is_ok());
+        let mut settings = Settings::default();
+        settings.force_usbv2 = true;
+        assert!(validate_aidl_settings(&settings).is_err());
+        settings.force_usbv2 = false;
+        settings.drc = true;
+        assert!(validate_aidl_settings(&settings).is_err());
+    }
+
+    #[test]
+    fn ambiguous_or_unsupported_aidl_versions_cannot_apply() {
+        assert_eq!(supported_audio_core_aidl_version(&[2]), Some(2));
+        assert_eq!(supported_audio_core_aidl_version(&[3]), Some(3));
+        for versions in [vec![], vec![1], vec![4], vec![2, 3]] {
+            assert_eq!(supported_audio_core_aidl_version(&versions), None);
+        }
+    }
 }

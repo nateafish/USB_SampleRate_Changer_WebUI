@@ -14,7 +14,7 @@ describe("diagnosticText", () => {
         "AudioFlinger state: running",
         "sample_rate=48000"
       ].join("\n"),
-      stderr: "controller_upstream_started=1\nnamespace verified: mnt:[1]\nreal diagnostic warning"
+      stderr: "controller_upstream_started=1\nglobal namespace verified: mnt:[1]\nreal diagnostic warning"
     });
     expect(text).toBe("AudioFlinger state: running\nsample_rate=48000\n[stderr]\nreal diagnostic warning");
   });

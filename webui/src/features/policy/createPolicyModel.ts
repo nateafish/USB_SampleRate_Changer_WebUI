@@ -57,6 +57,7 @@ const EMPTY_STATUS: DeviceStatus = {
   tools: defaultToolsSettings(),
   tuning: defaultTuningSettings(),
   autoReapply: false,
+  audioserverPriority: false,
   system: {
     a2dpConnected: false,
     a2dpState: "unknown",

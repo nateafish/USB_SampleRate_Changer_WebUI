@@ -98,12 +98,44 @@ describe("Policy model", () => {
 });
 
 describe("Tools model", () => {
+  it("confirms and resets Bluetooth HAL through the controller", async () => {
+    const resetBluetoothHal = vi.fn().mockResolvedValue({ code: 0, stdout: "restored", stderr: "" });
+    const confirm = confirmations();
+    const refresh = vi.fn().mockResolvedValue(deviceStatusFromControllerStatus({}));
+    const model = createToolsModel({
+      controller: {
+        setBluetoothHal: vi.fn(),
+        resetBluetoothHal,
+        applyResampler: vi.fn(),
+        resetResampler: vi.fn(),
+        setUsbPeriod: vi.fn(),
+        resetUsbPeriod: vi.fn(),
+        diagnose: vi.fn()
+      },
+      operations: createOperationCoordinator(),
+      notifications: notifications(),
+      confirmations: confirm,
+      a2dp: a2dp(),
+      status: { refresh }
+    });
+
+    await model.resetBluetoothHal();
+    expect(confirm.confirm).toHaveBeenCalledWith({
+      title: "tools.bluetoothHal.reset.title",
+      message: "tools.bluetoothHal.reset.message",
+      confirmLabel: "common.confirmReset"
+    });
+    expect(resetBluetoothHal).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalledWith("tools");
+  });
+
   it("normalizes resampler and USB drafts and refreshes before success", async () => {
     const events: string[] = [];
     const applyResampler = vi.fn().mockResolvedValue({ code: 0, stdout: "ok", stderr: "" });
     const setUsbPeriod = vi.fn().mockResolvedValue({ code: 0, stdout: "ok", stderr: "" });
     const controller: ToolsController = {
       setBluetoothHal: vi.fn(),
+      resetBluetoothHal: vi.fn(),
       applyResampler,
       resetResampler: vi.fn(),
       setUsbPeriod,
@@ -140,6 +172,7 @@ describe("Tools model", () => {
     const model = createToolsModel({
       controller: {
         setBluetoothHal: vi.fn(),
+        resetBluetoothHal: vi.fn(),
         applyResampler,
         resetResampler: vi.fn(),
         setUsbPeriod,
@@ -275,8 +308,13 @@ describe("Settings model", () => {
     expect(detectLanguage(["en-US", "zh-Hans-CN"])).toBe("zh-CN");
     await new Promise<void>((resolve, reject) => createRoot((dispose) => {
       const values = new Map<string, string>();
+      const openProjectPage = vi.fn().mockResolvedValue({ code: 0, stdout: "", stderr: "" });
       const model = createSettingsModel({
-        controller: { setAutoReapply: vi.fn().mockResolvedValue({ code: 0, stdout: "", stderr: "" }) },
+        controller: {
+          setAutoReapply: vi.fn().mockResolvedValue({ code: 0, stdout: "", stderr: "" }),
+          setAudioserverPriority: vi.fn().mockResolvedValue({ code: 0, stdout: "", stderr: "" }),
+          openProjectPage
+        },
         operations: createOperationCoordinator(),
         notifications: notifications(),
         confirmations: confirmations(),
@@ -286,6 +324,12 @@ describe("Settings model", () => {
       });
       void model.changeAutoReapply(true).then(() => {
         expect(model.autoReapply()).toBe(true);
+        return model.changeAudioserverPriority(true);
+      }).then(() => {
+        expect(model.audioserverPriority()).toBe(true);
+        return model.openProjectPage();
+      }).then(() => {
+        expect(openProjectPage).toHaveBeenCalledOnce();
         model.setPendingLanguage("zh-CN");
         model.applyLanguage();
         expect(values.get("usbSrLanguage")).toBe("zh-CN");

@@ -193,7 +193,7 @@ export function createTuningModel(options: CreateTuningModelOptions): TuningPage
     if (!accepted) return;
 
     const resetFeatures = options.resetFeatures?.()
-      ?? new Set(["selinux", "thermal", "doze", "governor", "camera", "logd", "io", "vm", "wifi"]);
+      ?? new Set(Object.keys(settings().jitter));
     const retainedDirty = dirty().filter((feature) => !resetFeatures.has(feature));
     const retainedDraft = settings();
 

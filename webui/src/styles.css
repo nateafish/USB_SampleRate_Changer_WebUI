@@ -86,6 +86,8 @@ h3 { margin: 0; font-size: 15px; }
 .field-label-row { display: flex; align-items: baseline; justify-content: flex-start; gap: 9px; }
 .inline-link { border: 0; padding: 4px 0; color: var(--accent); background: transparent; font-size: 11px; font-weight: 700; text-decoration: none; }
 .inline-link:active { opacity: .7; }
+.policy-mode-toggle { max-width: 360px; margin: 12px 0 0; }
+.policy-mode-toggle .switch-row { min-height: 58px; }
 .number-input, .select-trigger { width: 100%; min-height: 45px; border: 1px solid var(--border); border-radius: 13px; padding: 10px 12px; outline: none; background: var(--surface-2); color: var(--text); }
 .number-input, .period-stepper input { touch-action: pan-y; }
 .number-input:focus, .select-trigger:focus-visible { border-color: var(--accent); outline: 2px solid var(--accent-container); }
@@ -116,6 +118,7 @@ h3 { margin: 0; font-size: 15px; }
 .preview-card { border-color: var(--accent); background: var(--surface); }
 .page-panel[data-page="policy"] .preview-card { position: sticky; z-index: 3; top: 10px; box-shadow: 0 4px 14px rgba(0, 0, 0, .08); }
 .summary-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px 12px; }
+.preview-card .summary-line + .summary-line { margin-top: 10px; }
 .summary-line strong { margin-right: 12px; font-size: 13px; }
 .tag-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
 .tag { padding: 5px 8px; border-radius: 8px; color: var(--on-accent-container); background: var(--accent-container); font-size: 10px; }
@@ -145,10 +148,14 @@ h3 { margin: 0; font-size: 15px; }
 .language-setting .primary-button { min-width: 92px; }
 .about-card { overflow: hidden; }
 .about-brand { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 15px; background: var(--surface-2); }
+.about-brand-link { width: 100%; color: inherit; font: inherit; text-align: left; cursor: pointer; outline: none; -webkit-appearance: none; appearance: none; -webkit-tap-highlight-color: transparent; transition: border-color 160ms ease, background-color 160ms ease, transform 160ms ease; }
+.about-brand-link:focus, .about-brand-link:focus-visible { outline: none; box-shadow: none; }
+.about-brand-link:active { transform: scale(.996); }
 .about-brand .brand-mark { width: 40px; height: 40px; flex-basis: 40px; border-radius: 13px; }
 .about-brand .brand-mark svg { width: 22px; height: 22px; }
-.about-brand h3 { margin: 0; font-size: 13px; }
-.about-brand p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+.about-brand-copy { display: grid; gap: 4px; }
+.about-brand-copy strong { font-size: 13px; }
+.about-brand-copy small { color: var(--muted); font-size: 11px; }
 .about-details { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 12px; }
 .about-details > div { display: grid; gap: 4px; min-width: 0; padding: 10px; border-radius: 12px; background: color-mix(in srgb, var(--surface-2) 72%, transparent); }
 .about-details span { color: var(--muted); font-size: 10px; }

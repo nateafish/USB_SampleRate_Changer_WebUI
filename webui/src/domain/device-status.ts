@@ -73,6 +73,7 @@ export type DeviceStatus = {
   tools: ToolsSettings;
   tuning: TuningSettings;
   autoReapply: boolean;
+  audioserverPriority: boolean;
   system: DeviceSystemStatus;
 };
 
@@ -231,6 +232,9 @@ export function deviceStatusFromControllerStatus(
     autoReapply: status.auto_reapply === undefined
       ? previous?.autoReapply ?? false
       : statusFlag(status.auto_reapply),
+    audioserverPriority: status.audioserver_priority === undefined
+      ? previous?.audioserverPriority ?? false
+      : statusFlag(status.audioserver_priority),
     system: {
       controllerVersion: status.controller_version ?? previous?.system.controllerVersion,
       scriptVersion: status.script_version ?? previous?.system.scriptVersion,

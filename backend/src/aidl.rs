@@ -330,6 +330,16 @@ pub fn parse_audio_policy_dump(dump: &str) -> AudioPolicySnapshot {
 }
 
 pub fn parse_module_xml(xml: &str) -> Result<AudioModule, String> {
+    let document =
+        roxmltree::Document::parse(xml).map_err(|error| format!("invalid module XML: {error}"))?;
+    if document
+        .descendants()
+        .filter(|node| node.has_tag_name("module"))
+        .count()
+        != 1
+    {
+        return Err("module XML must contain exactly one module".to_string());
+    }
     let mut module = AudioModule::default();
     let mut current: Option<(PortKind, usize)> = None;
     let mut cursor = 0;
@@ -478,10 +488,16 @@ pub fn parse_audio_core_aidl_versions(xml: &str) -> Vec<u32> {
 }
 
 pub fn topology_match_score(runtime: &AudioModule, config: &AudioModule) -> (usize, usize) {
-    let total = runtime.output_mix_ports.len()
-        + runtime.input_mix_ports.len()
-        + runtime.device_ports.len()
-        + runtime.routes.len();
+    let total = runtime
+        .output_mix_ports
+        .len()
+        .max(config.output_mix_ports.len())
+        + runtime
+            .input_mix_ports
+            .len()
+            .max(config.input_mix_ports.len())
+        + runtime.device_ports.len().max(config.device_ports.len())
+        + runtime.routes.len().max(config.routes.len());
     if !module_names_equivalent(&runtime.name, &config.name) {
         return (0, total);
     }
@@ -1393,7 +1409,10 @@ mod tests {
                 connection: Some(connection.to_string()),
                 ..AudioPort::default()
             };
-            assert!(device_semantics_compatible(&runtime, &config), "{aidl_type}/{connection}");
+            assert!(
+                device_semantics_compatible(&runtime, &config),
+                "{aidl_type}/{connection}"
+            );
         }
         let usb = AudioPort {
             device_type: Some("AUDIO_DEVICE_OUT_USB_HEADSET".to_string()),

@@ -13,6 +13,7 @@ export default function SelectField(props: {
   id?: string;
   title: string;
   value: string;
+  displayLabel?: string;
   options: ReadonlyArray<SelectOption>;
   groups?: ReadonlyArray<SelectGroup>;
   language?: Language;
@@ -23,7 +24,7 @@ export default function SelectField(props: {
   const [closing, setClosing] = createSignal(false);
   const allOptions = createMemo(() => props.groups?.flatMap((group) => group.options) ?? props.options);
   const selectedLabel = createMemo(() => allOptions().find(([value]) => value === props.value)?.[1] ?? props.value);
-  const selectedTitle = createMemo(() => selectedLabel().split("\n", 1)[0]);
+  const selectedTitle = createMemo(() => props.displayLabel ?? selectedLabel().split("\n", 1)[0]);
   const historyKey = `select-${Math.random().toString(36).slice(2)}`;
   let optionList: HTMLDivElement | undefined;
   let ownsHistoryEntry = false;

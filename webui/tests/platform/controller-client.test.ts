@@ -22,20 +22,24 @@ describe("ControllerClient typed methods", () => {
 
     await client.apply({ ...defaultPolicySettings(), rate: "custom", customRate: "123456", drc: true });
     await client.setBluetoothHal("legacy");
+    await client.resetBluetoothHal();
     await client.applyResampler({ preset: "custom", bypass: "96", cheat: false, stopBand: 194, halfLength: 520, percent: 42 });
     await client.setUsbPeriod(2250);
     await client.diagnose("alsa", true);
     await client.setJitter({ feature: "io", enabled: true, ioScheduler: "bfq", ioTone: "boost" });
     await client.setJitter({ feature: "wifi", enabled: true, wifiNoRestart: true });
+    await client.openProjectPage();
 
     expect(commands).toEqual([
       "'/ctl' 'apply' '--policy' 'auto' '--sample-rate' '123456' '--bit-depth' '32' '--drc'",
       "'/ctl' 'extra' 'bluetooth-hal' 'legacy'",
+      "'/ctl' 'extra' 'bluetooth-hal' 'reset'",
       "'/ctl' 'extra' 'resampler' 'custom' '96' 'cutoff' '194' '520' '42'",
       "'/ctl' 'extra' 'usb-period' '2250'",
       "'/ctl' 'extra' 'diagnose' 'alsa' 'all'",
       "'/ctl' 'extra' 'jitter' 'enable' 'io' 'bfq' 'boost'",
-      "'/ctl' 'extra' 'jitter' 'enable' 'wifi' 'no-restart'"
+      "'/ctl' 'extra' 'jitter' 'enable' 'wifi' 'no-restart'",
+      "am start --user current -a android.intent.action.VIEW -c android.intent.category.BROWSABLE -d 'https://github.com/SivonZn/USB_SampleRate_Changer_WebUI'"
     ]);
   });
 

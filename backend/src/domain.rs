@@ -165,10 +165,10 @@ impl ExtraAction {
 
     pub(crate) fn script_args(&self) -> Vec<String> {
         match self {
-            Self::BluetoothHal { action } => vec![if action == "status" {
-                "--status".to_string()
-            } else {
-                action.clone()
+            Self::BluetoothHal { action } => vec![match action.as_str() {
+                "status" => "--status".to_string(),
+                "reset" => "--reset".to_string(),
+                _ => action.clone(),
             }],
             Self::ResamplerStatus => vec!["--status".to_string()],
             Self::ResamplerReset => vec!["--reset".to_string()],
@@ -209,14 +209,22 @@ impl ExtraAction {
                 tone,
                 wifi_no_restart,
             } => {
-                let flag = if feature == "wifi" && *enabled && *wifi_no_restart {
-                    "--wifi-no-restart".to_string()
+                let mut args = if feature == "wifi" && *enabled && *wifi_no_restart {
+                    vec!["--wifi-no-restart".to_string()]
+                } else if feature == "all" && !*enabled {
+                    // Upstream deliberately excludes battery and effect from
+                    // ++all. A controller-level reset treats their disabled
+                    // state as the default and restores all jitter features.
+                    vec![
+                        "++all".to_string(),
+                        "++battery".to_string(),
+                        "++effect".to_string(),
+                    ]
                 } else if feature == "all" {
-                    if *enabled { "--all" } else { "++all" }.to_string()
+                    vec!["--all".to_string()]
                 } else {
-                    format!("{}{}", if *enabled { "--" } else { "++" }, feature)
+                    vec![format!("{}{}", if *enabled { "--" } else { "++" }, feature)]
                 };
-                let mut args = vec![flag];
                 if feature == "io" && *enabled {
                     args.push(scheduler.clone().unwrap_or_else(|| "*".to_string()));
                     args.push(tone.clone().unwrap_or_else(|| "medium".to_string()));
@@ -273,7 +281,9 @@ impl ExtraAction {
             | Self::ResamplerCustom { .. }
             | Self::UsbPeriodReset
             | Self::UsbPeriodSet { .. } => true,
-            Self::JitterSet { feature, .. } => feature == "effect",
+            Self::JitterSet {
+                enabled, feature, ..
+            } => feature == "effect" || (feature == "all" && !*enabled),
             Self::ResamplerStatus
             | Self::UsbPeriodStatus
             | Self::JitterStatus
@@ -307,13 +317,14 @@ impl ReapplyAction {
 #[derive(Clone, Debug)]
 pub(crate) struct NamespaceInfo {
     pub(crate) self_ns: Option<String>,
+    pub(crate) init_ns: Option<String>,
     pub(crate) audio_ns: Option<String>,
     pub(crate) audio_pid: Option<u32>,
 }
 
 impl NamespaceInfo {
-    pub(crate) fn matches(&self) -> Option<bool> {
-        match (&self.self_ns, &self.audio_ns) {
+    pub(crate) fn is_global(&self) -> Option<bool> {
+        match (&self.self_ns, &self.init_ns) {
             (Some(left), Some(right)) => Some(left == right),
             _ => None,
         }

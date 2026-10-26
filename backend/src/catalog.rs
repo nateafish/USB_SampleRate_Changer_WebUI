@@ -59,29 +59,47 @@ pub(crate) const RESAMPLER_PRESET_GROUPS: &[(&str, &[&str])] = &[
 
 pub(crate) const POLICIES: &[(&str, &str, &str)] = &[
     ("auto", "--auto", "自动检测"),
-    ("offload", "--offload", "USB 与蓝牙硬件卸载"),
-    (
-        "offload-hifi-playback",
-        "--offload-hifi-playback",
-        "USB hifi_playback 硬件卸载",
-    ),
-    (
-        "offload-direct",
-        "--offload-direct",
-        "Direct PCM / 压缩卸载",
-    ),
-    ("offload-safer", "--offload-safer", "较安全的 USB 硬件卸载"),
-    ("bypass", "--bypass-offload", "绕过 USB 与蓝牙硬件卸载"),
+    ("bypass", "--bypass-offload", "绕过硬件 Offload"),
     (
         "bypass-safer",
         "--bypass-offload-safer",
-        "较安全地绕过 USB 与蓝牙硬件卸载",
+        "绕过硬件 Offload 兼容模式",
     ),
-    ("legacy", "--legacy", "旧版 A2DP HAL"),
-    ("safe", "--safe", "安全兼容模式"),
-    ("safest", "--safest", "最安全兼容模式"),
-    ("safest-auto", "--safest-auto", "最安全并自动检测 USB 上限"),
-    ("usb", "--usb-only", "仅修改 USB 音频策略"),
+    ("offload", "--offload", "硬件 Offload"),
+    (
+        "offload-hifi-playback",
+        "--offload-hifi-playback",
+        "USB HiFi Offload",
+    ),
+    ("offload-direct", "--offload-direct", "Direct PCM"),
+    ("offload-safer", "--offload-safer", "USB Offload 兼容模式"),
+    ("offload-direct-dynamic", "--offload-direct", "Direct PCM"),
+    ("legacy", "--legacy", "旧版蓝牙HAL"),
+    ("safe", "--safe", "保守兼容"),
+    ("safest", "--safest", "最大兼容"),
+    ("safest-auto", "--safest-auto", "最大兼容 - USB"),
+    ("bypass-dynamic", "--bypass-offload", "绕过硬件 Offload"),
+    (
+        "bypass-safer-dynamic",
+        "--bypass-offload-safer",
+        "绕过硬件 Offload 兼容模式",
+    ),
+    ("offload-dynamic", "--offload", "硬件 Offload"),
+    (
+        "offload-hifi-playback-dynamic",
+        "--offload-hifi-playback",
+        "USB HiFi Offload",
+    ),
+    (
+        "offload-safer-dynamic",
+        "--offload-safer",
+        "USB Offload 兼容模式",
+    ),
+    ("legacy-dynamic", "--legacy", "旧版蓝牙HAL"),
+    ("safe-dynamic", "--safe", "保守兼容"),
+    ("safest-dynamic", "--safest", "最大兼容"),
+    ("safest-auto-dynamic", "--safest-auto", "最大兼容 - USB"),
+    ("usb", "--usb-only", "仅USB"),
 ];
 
 pub(crate) const DOCUMENTED_RATES: &[(u32, &str)] = &[
